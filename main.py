@@ -98,4 +98,4 @@ async def sync(ctx):
         await ctx.send(f"Sync failed: {e}")
 
 # IMPORTANT: Run the bot
-bot.run('MTQ4NTY5MzczNDY5NDY4Njk3MA.GEp9Rn.xDQ3vlsh_Qrs_Y8D08pDpuA_PI0cmWcMG3YPIM')
+bot.run('')
