@@ -2,10 +2,14 @@ import discord
 from discord.ext import commands
 import json
 import os
+from dotenv import load_dotenv
 
 # --- SETUP & PERSISTENCE ---
+load_dotenv()
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
+
+token = os.getenv('BOT_TOKEN')
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "tracking_data.json")
 PLAYER_DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "player_data.json")
@@ -98,4 +102,4 @@ async def sync(ctx):
         await ctx.send(f"Sync failed: {e}")
 
 # IMPORTANT: Run the bot
-bot.run('')
+bot.run(token)
