@@ -4,7 +4,6 @@ import json
 import os
 from dotenv import load_dotenv
 
-#Im here...
 load_dotenv()
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -14,6 +13,7 @@ token = os.getenv('BOT_TOKEN')
 DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "tracking_data.json")
 PLAYER_DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "player_data.json")
 LOADED_PLAYER_DATA = os.path.join(os.path.dirname(__file__), "bot_data", "loaded_player_data.json")
+PROCESSED_GAMES_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "processed_games.json")
 
 if not os.path.exists(os.path.dirname(DATA_FILE)):
     os.makedirs(os.path.dirname(DATA_FILE))
@@ -22,6 +22,7 @@ if not os.path.exists(os.path.dirname(DATA_FILE)):
 bot.server_data = {}
 bot.player_data = {}
 bot.loaded_player_data = {}
+bot.processed_games = [] # Global tracking list for game IDs
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -46,7 +47,12 @@ def load_data():
     if os.path.exists(LOADED_PLAYER_DATA):
         with open(LOADED_PLAYER_DATA, "r") as f:
             bot.loaded_player_data = json.load(f)
-            print(f"Loaded cached player data for {len(bot.loaded_player_data)} players.")
+            print(f"Loaded cached player data for {len(bot.loaded_player_data)} clans.")
+            
+    if os.path.exists(PROCESSED_GAMES_FILE):
+        with open(PROCESSED_GAMES_FILE, "r") as f:
+            bot.processed_games = json.load(f)
+            print(f"Loaded {len(bot.processed_games)} processed games.")
 
 # Attach the save function to the bot as well
 def save_data():
@@ -57,6 +63,9 @@ def save_data():
         json.dump(bot.player_data, f, indent=4) 
     with open(LOADED_PLAYER_DATA, "w") as f:
         json.dump(bot.loaded_player_data, f, indent=4)
+    with open(PROCESSED_GAMES_FILE, "w") as f:
+        # Keep only the last 5000 games so the file doesn't grow infinitely large
+        json.dump(bot.processed_games[-5000:], f, indent=4)
 
 bot.save_data = save_data
 load_data()
@@ -64,13 +73,11 @@ load_data()
 # --- COG LOADING & EVENTS ---
 @bot.event
 async def setup_hook():
-    # This automatically loads the 3 files inside your 'scripts' folder
     await bot.load_extension("scripts.tracking_cmds")
     await bot.load_extension("scripts.stats_cmds")
     await bot.load_extension("scripts.main_loop")
     await bot.load_extension("scripts.load_players")
     
-    # Sync commands on startup
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} slash command(s).")
@@ -101,5 +108,4 @@ async def sync(ctx):
     except Exception as e:
         await ctx.send(f"Sync failed: {e}")
 
-# IMPORTANT: Run the bot
 bot.run(token)

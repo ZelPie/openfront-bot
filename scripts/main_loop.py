@@ -113,11 +113,10 @@ class BackgroundLoop(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"An error occurred during test: {e}")
 
-    @tasks.loop(seconds=30) 
+@tasks.loop(seconds=30) 
     async def check_clan_stats(self):
         print("Checking for clan updates...")
 
-        # First, gather all unique clans being tracked across all servers to minimize API calls
         unique_clans = set()
         for data in list(self.bot.server_data.values()):
             for tracker in data.get("trackers", []):
@@ -128,7 +127,7 @@ class BackgroundLoop(commands.Cog):
             clan_api_data = {}
             match_details_cache = {}
             
-            # Fetch sessions for each unique clan and store in a dict for quick access
+            # Fetch recent sessions for each unique clan
             for clan_tag in unique_clans:
                 api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions"
                 try:
@@ -143,39 +142,24 @@ class BackgroundLoop(commands.Cog):
                 except Exception as e:
                     print(f"Error fetching data for {clan_tag}: {e}")
 
-            # Now process each clan's sessions and update player stats and send notifications as needed
+            # -----------------------------------------------------------------
+            # 1. GLOBAL PLAYER STATS (Uses processed_games to avoid double counting)
+            # -----------------------------------------------------------------
+            stats_updated = False
             for clan_tag, sessions in clan_api_data.items():
                 if clan_tag not in self.bot.player_data:
                     self.bot.player_data[clan_tag] = {"wins": 0, "losses": 0, "winrate": 0.0, "total_games": 0, "players": {}}
 
-                last_processed = self.bot.server_data.get("trackers", {}).get(clan_tag, {}).get("last_session_id")
-                new_global_sessions = []
-                found_anchor = False
-                
-                if not last_processed:
-                    self.bot.server_data["trackers"][clan_tag]["last_session_id"] = sessions[-1].get("gameId")
-                    self.bot.save_data()
-                    continue
-                
                 for session in sessions:
-                    if not found_anchor:
-                        if session.get("gameId") == last_processed:
-                            found_anchor = True
-                        continue
-                    new_global_sessions.append(session)
-                    
-                if not found_anchor and last_processed:
-                    last_processed = sessions[-1].get("gameId")
-                    self.bot.save_data()
-                    continue
-                    
-                print(f"Found {len(new_global_sessions)} new global sessions for clan [{clan_tag}] since last anchor game.")
-
-                for session in new_global_sessions:
                     session_id = session.get("gameId")
-                    is_win = session.get("hasWon", False)
                     
+                    # If we have already counted this game globally, skip it
+                    if session_id in self.bot.processed_games:
+                        continue
+                        
+                    is_win = session.get("hasWon", False)
                     game_url = f"https://api.openfront.io/public/game/{session_id}?turns=false"
+                    
                     try:
                         async with http_session.get(game_url, timeout=10) as game_resp:
                             if game_resp.status == 200:
@@ -185,11 +169,13 @@ class BackgroundLoop(commands.Cog):
                                 match_details_cache[session_id] = all_players 
                                 self.bot.player_data[clan_tag]["total_games"] += 1
                                 
+                                # Add the game to the global list so it's never checked again
+                                self.bot.processed_games.append(session_id)
+                                stats_updated = True
+                                
                                 already_counted_players = set()
 
                                 for p in all_players:
-                                    
-
                                     if p.get("clanTag", "").upper() == clan_tag.upper():
                                         p_name = p.get("username", "Unknown")
 
@@ -199,9 +185,11 @@ class BackgroundLoop(commands.Cog):
                                         already_counted_players.add(p_name)
                                         
                                         if p_name not in self.bot.player_data[clan_tag]["players"]:
-                                            self.bot.player_data[clan_tag]["players"][p_name] = {"name": p_name, "games_played": 0, "wins": 0}
+                                            self.bot.player_data[clan_tag]["players"][p_name] = {"name": [p_name], "games_played": 0, "wins": 0}
                                             
                                         p_stats = self.bot.player_data[clan_tag]["players"][p_name]
+                                        
+                                        # Update the name aliases if somehow changed
                                         if p_name not in p_stats["name"]:
                                             p_stats["name"].append(p_name)
                                             
@@ -211,15 +199,16 @@ class BackgroundLoop(commands.Cog):
                                             
                     except Exception as e:
                         print(f"Failed to process global player stats for {session_id}: {e}")
-                        
-                if new_global_sessions:
-                    self.bot.player_data[clan_tag]["last_processed_game"] = sessions[-1].get("gameId")
-                    self.bot.save_data()
 
+            if stats_updated:
+                self.bot.save_data()
+
+            # -----------------------------------------------------------------
+            # 2. PER-SERVER EMBED NOTIFICATIONS (Uses channel-specific last_session_id)
+            # -----------------------------------------------------------------
             clan_overall_stats_cache = {}
 
             for guild_id, data in list(self.bot.server_data.items()):
-                server_name = data.get("server_name", f"Server ID {guild_id}")
                 trackers = data.get("trackers", [])
                 
                 for tracker in list(trackers):
