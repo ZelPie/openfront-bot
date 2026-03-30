@@ -22,7 +22,7 @@ if not os.path.exists(os.path.dirname(DATA_FILE)):
 bot.server_data = {}
 bot.player_data = {}
 bot.loaded_player_data = {}
-bot.processed_games = [] # Global tracking list for game IDs
+bot.processed_games = {} # Global tracking list for game IDs
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -52,7 +52,11 @@ def load_data():
     if os.path.exists(PROCESSED_GAMES_FILE):
         with open(PROCESSED_GAMES_FILE, "r") as f:
             bot.processed_games = json.load(f)
-            print(f"Loaded {len(bot.processed_games)} processed games.")
+            # Count the total games across all clan lists
+            total_games = sum(len(games) for games in bot.processed_games.values())
+            print(f"Loaded {total_games} processed games across {len(bot.processed_games)} clans.")
+    
+
 
 # Attach the save function to the bot as well
 def save_data():
@@ -65,7 +69,10 @@ def save_data():
         json.dump(bot.loaded_player_data, f, indent=4)
     with open(PROCESSED_GAMES_FILE, "w") as f:
         # Keep only the last 5000 games so the file doesn't grow infinitely large
-        json.dump(bot.processed_games[-5000:], f, indent=4)
+        save_processed = {
+            clan: games[-5000:] for clan, games in bot.processed_games.items()
+        }
+        json.dump(save_processed, f, indent=4)
 
 bot.save_data = save_data
 load_data()

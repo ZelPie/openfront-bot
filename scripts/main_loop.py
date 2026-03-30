@@ -12,7 +12,6 @@ class BackgroundLoop(commands.Cog):
     def script_unload(self):
         self.check_clan_stats.cancel()
 
-    # The shared embed builder method
     async def create_match_embed(self, http_session, clan_tag, session, track_losses=True, match_cache=None, stats_cache=None):
         if match_cache is None: match_cache = {}
         if stats_cache is None: stats_cache = {}
@@ -83,37 +82,7 @@ class BackgroundLoop(commands.Cog):
 
         return embed
 
-    @app_commands.command(name="test", description="Test the embed output using the latest game from clan UN.")
-    async def test_embed(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        clan_tag = "UN" 
-        api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions"
-        
-        try:
-            async with aiohttp.ClientSession() as http_session:
-                async with http_session.get(api_url, timeout=10) as response:
-                    if response.status == 200:
-                        api_data = await response.json()
-                        sessions = list(api_data) if isinstance(api_data, list) else [api_data]
-                        
-                        if not sessions:
-                            await interaction.followup.send(f"Could not find any recent games for [{clan_tag}].")
-                            return
-                        
-                        latest_session = sessions[-1] 
-                        
-                        # Use the helper method defined above!
-                        embed = await self.create_match_embed(http_session, clan_tag, latest_session, track_losses=True)
-                        if embed:
-                            await interaction.followup.send(content=f"**TEST MODE:** Latest match for [{clan_tag}]", embed=embed)
-                        else:
-                            await interaction.followup.send("Failed to build embed.")
-                    else:
-                        await interaction.followup.send(f"API Error: {response.status}")
-        except Exception as e:
-            await interaction.followup.send(f"An error occurred during test: {e}")
-
-    @tasks.loop(seconds=30) 
+    @tasks.loop(seconds=10) 
     async def check_clan_stats(self):
         print("Checking for clan updates...")
 
@@ -127,7 +96,6 @@ class BackgroundLoop(commands.Cog):
             clan_api_data = {}
             match_details_cache = {}
             
-            # Fetch recent sessions for each unique clan
             for clan_tag in unique_clans:
                 api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions"
                 try:
@@ -142,17 +110,54 @@ class BackgroundLoop(commands.Cog):
                 except Exception as e:
                     print(f"Error fetching data for {clan_tag}: {e}")
 
-
+            # -----------------------------------------------------------------
+            # 1. GLOBAL PLAYER STATS (Strictly NEW games only)
+            # -----------------------------------------------------------------
             stats_updated = False
             for clan_tag, sessions in clan_api_data.items():
                 if clan_tag not in self.bot.player_data:
                     self.bot.player_data[clan_tag] = {"wins": 0, "losses": 0, "winrate": 0.0, "total_games": 0, "players": {}}
 
+                if clan_tag not in self.bot.processed_games:
+                    self.bot.processed_games[clan_tag] = []
+
+                # The Anchor: Ensures we ONLY track new games and ignore history
+                last_processed = self.bot.player_data[clan_tag].get("last_processed_game")
+                
+                if not last_processed:
+                    # First time seeing clan. Set anchor to latest game [-1], skip history.
+                    print(f"Setting initial anchor for [{clan_tag}] to game ID {sessions[-1].get('gameId')}. Skipping historical data.")
+                    self.bot.player_data[clan_tag]["last_processed_game"] = sessions[-1].get("gameId")
+                    self.bot.save_data()
+                    continue
+                
+                new_global_sessions = []
+                found_anchor = False
+                
                 for session in sessions:
+                    if not found_anchor:
+                        if session.get("gameId") == last_processed:
+                            found_anchor = True
+                        continue
+                    # Anything after the anchor is brand new
+                    new_global_sessions.append(session)
+                    
+                if not found_anchor and last_processed:
+                    # Anchor lost (API returned games too far ahead), reset anchor to latest
+                    self.bot.player_data[clan_tag]["last_processed_game"] = sessions[-1].get("gameId")
+                    self.bot.save_data()
+                    continue
+                    
+                if not new_global_sessions:
+                    continue
+
+                print(f"Found {len(new_global_sessions)} new global sessions for clan [{clan_tag}] since last check.")
+
+                for session in new_global_sessions:
                     session_id = session.get("gameId")
                     
-                    # If we have already counted this game globally, skip it
-                    if session_id in self.bot.processed_games:
+                    # Prevent overlap with the /load_players background command
+                    if session_id in self.bot.processed_games.get(clan_tag, []):
                         continue
                         
                     is_win = session.get("hasWon", False)
@@ -167,8 +172,8 @@ class BackgroundLoop(commands.Cog):
                                 match_details_cache[session_id] = all_players 
                                 self.bot.player_data[clan_tag]["total_games"] += 1
                                 
-                                # Add the game to the global list so it's never checked again
-                                self.bot.processed_games.append(session_id)
+                                # Use dictionary append properly!
+                                self.bot.processed_games[clan_tag].append(session_id)
                                 stats_updated = True
                                 
                                 already_counted_players = set()
@@ -187,7 +192,10 @@ class BackgroundLoop(commands.Cog):
                                             
                                         p_stats = self.bot.player_data[clan_tag]["players"][p_name]
                                         
-                                        # Update the name aliases if somehow changed
+                                        # Data migration for older string-based names
+                                        if not isinstance(p_stats["name"], list):
+                                            p_stats["name"] = [p_stats["name"]]
+                                            
                                         if p_name not in p_stats["name"]:
                                             p_stats["name"].append(p_name)
                                             
@@ -198,9 +206,16 @@ class BackgroundLoop(commands.Cog):
                     except Exception as e:
                         print(f"Failed to process global player stats for {session_id}: {e}")
 
+                if new_global_sessions:
+                    self.bot.player_data[clan_tag]["last_processed_game"] = new_global_sessions[-1].get("gameId")
+                    stats_updated = True
+
             if stats_updated:
                 self.bot.save_data()
 
+            # -----------------------------------------------------------------
+            # 2. PER-SERVER EMBED NOTIFICATIONS 
+            # -----------------------------------------------------------------
             clan_overall_stats_cache = {}
 
             for guild_id, data in list(self.bot.server_data.items()):
@@ -249,23 +264,17 @@ class BackgroundLoop(commands.Cog):
                         
                     for session in new_sessions: 
                         embed = await self.create_match_embed(
-                            http_session, 
-                            clan_tag, 
-                            session, 
-                            track_losses, 
-                            match_details_cache, 
-                            clan_overall_stats_cache
+                            http_session, clan_tag, session, track_losses, 
+                            match_details_cache, clan_overall_stats_cache
                         )
-                        
                         if embed:
                             await channel.send(embed=embed)
                         
-                    tracker["last_session_id"] = sessions[-1].get("gameId")
+                    tracker["last_session_id"] = new_sessions[-1].get("gameId")
                     self.bot.save_data()
 
     @check_clan_stats.before_loop
     async def before_check_clan_stats(self):
-        # Wait for the bot to be fully ready before starting the loop
         await self.bot.wait_until_ready()
 
 async def setup(bot):
