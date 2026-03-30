@@ -1,0 +1,216 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+import aiohttp
+
+class StatsCmds(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="clan_info", description="Get overall statistics for a specific clan.")
+    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)")
+    async def clan_info(self, interaction: discord.Interaction, clan_tag: str):
+        await interaction.response.defer()
+        tag_upper = clan_tag.upper()
+        url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}"
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as response:
+                    if response.status == 200:
+                        dat = await response.json()
+                        data = dat.get("clan", {})
+                        wins = data.get("wins", 0)
+                        games = data.get("games", 0)
+                        losses = games - wins
+                        wl_ratio = data.get("weightedWLRatio", 0)
+                        weighted_wins = data.get("weightedWins", 0)
+                        
+                        embed = discord.Embed(title=f"Clan [{tag_upper}] Statistics", color=discord.Color.blurple())
+                        embed.add_field(name="Total Matches", value=f"**{games}**", inline=True)
+                        embed.add_field(name="Wins / Losses", value=f"**{wins}** / **{losses}**", inline=True)
+                        embed.add_field(name="Win/Loss Ratio", value=f"**{wl_ratio:.2f}**", inline=True)
+                        embed.add_field(name="Weighted Wins", value=f"**{weighted_wins}**", inline=False)
+                        
+                        await interaction.followup.send(embed=embed)
+                    else:
+                        await interaction.followup.send(f"Could not find stats for **[{tag_upper}]**. (API returned status {response.status})")
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred while fetching clan info: {e}")
+
+    @app_commands.command(name="player_info", description="Get tracked internal statistics for a specific player.")
+    @app_commands.describe(clan_tag="The clan they play for (e.g., CAF)", username="The player's username")
+    async def player_info(self, interaction: discord.Interaction, clan_tag: str, username: str):
+        tag_upper = clan_tag.upper()
+        search_name = username.lower()
+        
+        if tag_upper not in self.bot.player_data:
+            await interaction.response.send_message(f"We don't have any tracked data for clan **[{tag_upper}]** yet.", ephemeral=True)
+            return
+            
+        clan_db = self.bot.player_data[tag_upper]
+        found_player_id = None
+        
+        for p_id, stats in clan_db.get("players", {}).items():
+            known_lower = [name.lower() for name in stats.get("known_names", [])]
+            if search_name in known_lower or search_name == p_id:
+                found_player_id = p_id
+                break
+                
+        if not found_player_id:
+            await interaction.response.send_message(f"Could not find any tracked games for player **{username}** in clan **[{tag_upper}]**.", ephemeral=True)
+            return
+            
+        p_stats = clan_db["players"][found_player_id]
+        games_played = p_stats["games_played"]
+        wins = p_stats["wins"]
+        losses = games_played - wins
+        total_clan_games = clan_db.get("total_games", 0)
+        
+        winrate = (wins / games_played) * 100 if games_played > 0 else 0.0
+        participation = (games_played / total_clan_games) * 100 if total_clan_games > 0 else 0.0
+        aliases = ", ".join([f"`{n}`" for n in p_stats.get("known_names", [])])
+        
+        embed = discord.Embed(title=f"👤 Player Stats: {username} [{tag_upper}]", color=discord.Color.blue())
+        embed.add_field(name="Known Aliases", value=aliases, inline=False)
+        embed.add_field(name="Personal Win/Loss", value=f"**{wins}W** - **{losses}L**", inline=True)
+        embed.add_field(name="Personal Win Rate", value=f"**{winrate:.1f}%**", inline=True)
+        embed.add_field(name="Clan Participation", value=f"Played in **{games_played}** tracked matches (**{participation:.1f}%** of clan activity)", inline=False)
+        
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="leaderboard", description="Displays the top OpenFront clans.")
+    @app_commands.describe(sort_by="Choose how to rank the clans", num="How many clans to display (Default: 10, Max: 25)", lower_num="What place to start the list from (Default: 1)")
+    @app_commands.choices(sort_by=[
+        app_commands.Choice(name="Highest Total Wins", value="wins"),
+        app_commands.Choice(name="Highest Win/Loss Ratio", value="winrate"),
+        app_commands.Choice(name='Weighted Wins', value="weighted_wins"),
+    ])
+    async def show_leaderboard(self, interaction: discord.Interaction, sort_by: app_commands.Choice[str] = None, num: int = 10, lower_num: int = 1):
+        await interaction.response.defer()
+
+        if num < 1 or num > 25:
+            num = 10
+
+        if lower_num < 1:
+            lower_num = 1
+        
+        try:
+            url = "https://api.openfront.io/public/clans/leaderboard"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        clans_list = data.get("clans", [])
+                        
+                        sort_choice = sort_by.value if sort_by else "default"
+                        embed_title = f"🏆 Top {num} OpenFront Clans"
+                        
+                        if sort_choice == "wins":
+                            clans_list.sort(key=lambda c: c.get("wins", 0), reverse=True)
+                            embed_title = f"🏆 Top {num} Clans by Total Wins"
+                        elif sort_choice == "winrate":
+                            clans_list.sort(key=lambda c: c.get("weightedWLRatio", 0), reverse=True)
+                            embed_title = f"🏆 Top {num} Clans by W/L Ratio"
+                        elif sort_choice == "weighted_wins":
+                            clans_list.sort(key=lambda c: c.get("weightedWins", 0), reverse=True)
+                            embed_title = f"🏆 Top {num} Clans by Weighted Wins"
+
+                        top_clans = clans_list[:num]
+                        embed = discord.Embed(title=embed_title, color=discord.Color.gold())
+                        
+                        leaderboard_text = ""
+                        for index, clan in enumerate(top_clans, start=lower_num):
+                            tag = clan.get("clanTag", "UNK")
+                            wins = clan.get("wins", 0)
+                            weighted_wins = clan.get("weightedWins", 0)
+                            games = clan.get("games", 0)
+                            wl_ratio = clan.get("weightedWLRatio", 0)
+                            
+                            wins_str = f"``{wins}``" if sort_choice == "wins" or sort_choice == "default" else f"{wins}"
+                            wl_str = f"``{wl_ratio:.2f}``" if sort_choice == "winrate" else f"{wl_ratio:.2f}"
+                            weighted_wins_str = f"``{weighted_wins}``" if sort_choice == "weighted_wins" else f"{weighted_wins}"
+
+                            stat_string = f"Wins: {wins_str} (Weighted Wins: {weighted_wins_str}) \n Games: {games} \n W/L: {wl_str}"
+                            leaderboard_text += f"**{index}. [{tag}]** {stat_string}\n\n"
+                            
+                        embed.description = leaderboard_text
+                        await interaction.followup.send(embed=embed)
+                    else:
+                        await interaction.followup.send(f"Failed to fetch leaderboard. Status Code: {response.status}")
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred while loading the leaderboard: {e}")
+
+    @app_commands.command(name="clan_players", description="List all tracked players for a specific clan.")
+    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", min_games="Minimum games played to be included in the list (Default: 5)")
+    async def clan_players(self, interaction: discord.Interaction, clan_tag: str, min_games: int = 5):
+        tag_upper = clan_tag.upper()
+        
+        if tag_upper not in self.bot.player_data:
+            await interaction.response.send_message(f"No tracked player data found for clan **[{tag_upper}]**.", ephemeral=True)
+            return
+            
+        clan_db = self.bot.player_data[tag_upper]
+        players = clan_db.get("players", {})
+
+        # Sort players by win rate, then by games played, and take the top 10 (or fewer if there aren't that many) if they have at least min_games games played to avoid skewing by players with very few matches
+        top_players = sorted(
+            [x for x in players.items() if x[1].get("games_played", 0) >= min_games], 
+            key=lambda x: (x[1].get("wins", 0) / x[1].get("games_played", 0), x[1].get("games_played", 0)), 
+            reverse=True
+        )[:10]
+        
+
+        if not players:
+            await interaction.response.send_message(f"No players are currently being tracked for clan **[{tag_upper}]**.", ephemeral=True)
+            return
+            
+        embed = discord.Embed(title=f"Tracked Players for [{tag_upper}]", color=discord.Color.green())
+        description = ""
+        
+        for p_id, stats in top_players:
+            games_played = stats.get("games_played", 0)
+            wins = stats.get("wins", 0)
+            losses = games_played - wins
+            winrate = (wins / games_played) * 100 if games_played > 0 else 0.0
+            
+            description += f"**{p_id}** - Games: {games_played}, W/L: {wins}/{losses}, Win Rate: {winrate:.1f}%\n\n"
+        
+        embed.description = description
+        await interaction.response.send_message(embed=embed)
+    
+    @app_commands.command(name="display_all_players", description="Load ALL player data for a specific clan.")
+    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", min_games="Minimum games played to be included in the list (Default: 5)")
+    async def display_all_players(self, interaction: discord.Interaction, clan_tag: str, min_games: int = 5):
+        await interaction.response.defer()
+        tag_upper = clan_tag.upper()
+
+        clan_db = self.bot.loaded_player_data.get(tag_upper)
+        if not clan_db:
+            await interaction.followup.send(f"No loaded player data found for clan **[{tag_upper}]**. Use `/load_players` to fetch data from the API first.", ephemeral=True)
+            return
+        
+        players = clan_db.get("players", {})
+        
+        sorted_players = sorted(
+            [x for x in players.items() if x[1].get("games_played", 0) >= min_games], 
+            key=lambda x: (x[1].get("wins", 0) / x[1].get("games_played", 0), x[1].get("games_played", 0)), 
+            reverse=True
+        )[:10]
+
+        embed = discord.Embed(title=f"Top 10 Players for [{tag_upper}] (Loaded Data)", color=discord.Color.purple())
+        description = ""
+
+        for p_id, stats in sorted_players:
+            games_played = stats.get("games_played", 0)
+            wins = stats.get("wins", 0)
+            losses = games_played - wins
+            winrate = (wins / games_played) * 100 if games_played > 0 else 0.0
+
+            description += f"**{p_id}** - Games: {games_played}, W/L: {wins}/{losses}, Win Rate: {winrate:.1f}%\n\n"
+
+        embed.description = description
+        await interaction.followup.send(embed=embed)
+
+async def setup(bot):
+    await bot.add_cog(StatsCmds(bot))

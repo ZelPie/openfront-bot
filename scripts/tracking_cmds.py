@@ -1,0 +1,68 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+class TrackingCmds(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="track", description="Set up advanced match tracking for a clan.")
+    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", channel="The channel to post updates in", track_losses="Post match losses? (Default: False)")
+    async def track_clan(self, interaction: discord.Interaction, clan_tag: str, channel: discord.TextChannel, track_losses: bool = False):
+        guild_id = interaction.guild_id
+        tag_upper = clan_tag.upper()
+        server_name = interaction.guild.name
+        
+        if guild_id not in self.bot.server_data:
+            self.bot.server_data[guild_id] = {"server_name": server_name, "trackers": []}
+        else:
+            self.bot.server_data[guild_id]["server_name"] = server_name
+            
+        for tracker in self.bot.server_data[guild_id]["trackers"]:
+            if tracker["clan_tag"] == tag_upper and tracker["channel_id"] == channel.id:
+                tracker["track_losses"] = track_losses
+                self.bot.save_data()
+                await interaction.response.send_message(f"Updated tracker for **[{tag_upper}]** in {channel.mention}. Tracking losses: `{track_losses}`.")
+                return
+
+        new_tracker = {
+            "channel_id": channel.id,
+            "clan_tag": tag_upper,
+            "api_url": f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions", 
+            "last_session_id": None,
+            "track_losses": track_losses
+        }
+        
+        self.bot.server_data[guild_id]["trackers"].append(new_tracker)
+        self.bot.save_data() 
+        
+        loss_text = "and losses" if track_losses else "(wins only)"
+        await interaction.response.send_message(f"Now tracking matches {loss_text} for **[{tag_upper}]** in {channel.mention}!")
+
+    @app_commands.command(name="untrack", description="Stop tracking a clan in a specific channel.")
+    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", channel="The channel to stop posting updates in")
+    async def untrack_clan(self, interaction: discord.Interaction, clan_tag: str, channel: discord.TextChannel):
+        guild_id = interaction.guild_id
+        tag_upper = clan_tag.upper()
+
+        if guild_id not in self.bot.server_data or not self.bot.server_data[guild_id].get("trackers"):
+            await interaction.response.send_message(f"This server isn't tracking any clans yet!", ephemeral=True)
+            return
+
+        trackers = self.bot.server_data[guild_id]["trackers"]
+        original_length = len(trackers)
+
+        self.bot.server_data[guild_id]["trackers"] = [
+            t for t in trackers 
+            if not (t["clan_tag"] == tag_upper and t["channel_id"] == channel.id)
+        ]
+
+        if len(self.bot.server_data[guild_id]["trackers"]) < original_length:
+            self.bot.save_data()
+            await interaction.response.send_message(f"Successfully stopped tracking **[{tag_upper}]** in {channel.mention}.")
+        else:
+            await interaction.response.send_message(f"Could not find an active tracker for **[{tag_upper}]** in {channel.mention}.", ephemeral=True)
+
+# This function tells main.py how to load this file
+async def setup(bot):
+    await bot.add_cog(TrackingCmds(bot))

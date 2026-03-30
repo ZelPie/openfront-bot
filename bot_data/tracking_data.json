@@ -1,0 +1,68 @@
+{
+    "1477202265772265623": {
+        "server_name": "[CAF] OpenFront",
+        "trackers": [
+            {
+                "channel_id": 1485707599080067133,
+                "clan_tag": "UN",
+                "api_url": "https://api.openfront.io/public/clan/un/sessions",
+                "last_session_id": "JBWbgtwU",
+                "track_losses": false
+            },
+            {
+                "channel_id": 1477202634145534106,
+                "clan_tag": "CAF",
+                "api_url": "https://api.openfront.io/public/clan/caf/sessions",
+                "last_session_id": "t6bncEFi",
+                "track_losses": true
+            },
+            {
+                "channel_id": 1478200656627240981,
+                "clan_tag": "NUA",
+                "api_url": "https://api.openfront.io/public/clan/nua/sessions",
+                "last_session_id": "xzrU63qF",
+                "track_losses": true
+            },
+            {
+                "channel_id": 1478200656627240981,
+                "clan_tag": "NUB",
+                "api_url": "https://api.openfront.io/public/clan/nub/sessions",
+                "last_session_id": "hxnYtDNv",
+                "track_losses": true
+            },
+            {
+                "channel_id": 1486142562572959975,
+                "clan_tag": "GOC",
+                "api_url": "https://api.openfront.io/public/clan/goc/sessions",
+                "last_session_id": "WuurKrDA",
+                "track_losses": true
+            },
+            {
+                "channel_id": 1478200621151817819,
+                "clan_tag": "HKR",
+                "api_url": "https://api.openfront.io/public/clan/hkr/sessions",
+                "last_session_id": "rLt4GMYM",
+                "track_losses": true
+            },
+            {
+                "channel_id": 1486872225490538617,
+                "clan_tag": "NU",
+                "api_url": "https://api.openfront.io/public/clan/nu/sessions",
+                "last_session_id": "bn2iKmR9",
+                "track_losses": false
+            }
+        ]
+    },
+    "907737118082756658": {
+        "server_name": "Pie Planet",
+        "trackers": [
+            {
+                "channel_id": 908108232684359771,
+                "clan_tag": "UN",
+                "api_url": "https://api.openfront.io/public/clan/un/sessions",
+                "last_session_id": null,
+                "track_losses": false
+            }
+        ]
+    }
+}
