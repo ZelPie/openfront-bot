@@ -113,7 +113,7 @@ class BackgroundLoop(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"An error occurred during test: {e}")
 
-@tasks.loop(seconds=30) 
+    @tasks.loop(seconds=30) 
     async def check_clan_stats(self):
         print("Checking for clan updates...")
 
@@ -142,9 +142,7 @@ class BackgroundLoop(commands.Cog):
                 except Exception as e:
                     print(f"Error fetching data for {clan_tag}: {e}")
 
-            # -----------------------------------------------------------------
-            # 1. GLOBAL PLAYER STATS (Uses processed_games to avoid double counting)
-            # -----------------------------------------------------------------
+
             stats_updated = False
             for clan_tag, sessions in clan_api_data.items():
                 if clan_tag not in self.bot.player_data:
@@ -203,9 +201,6 @@ class BackgroundLoop(commands.Cog):
             if stats_updated:
                 self.bot.save_data()
 
-            # -----------------------------------------------------------------
-            # 2. PER-SERVER EMBED NOTIFICATIONS (Uses channel-specific last_session_id)
-            # -----------------------------------------------------------------
             clan_overall_stats_cache = {}
 
             for guild_id, data in list(self.bot.server_data.items()):
