@@ -4,7 +4,6 @@ import json
 import os
 from dotenv import load_dotenv
 
-# --- SETUP & PERSISTENCE ---
 load_dotenv()
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
