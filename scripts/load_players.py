@@ -87,11 +87,6 @@ class LoadPlayers(commands.Cog):
                             if game_id in self.bot.processed_games[tag_upper]:
                                 consecutive_processed_count += 1
                                 continue
-                                
-                            if hasattr(self.bot, 'recent_games') and tag_upper in getattr(self.bot, 'recent_games', {}):
-                                if game_id in self.bot.recent_games[tag_upper]:
-                                    consecutive_processed_count += 1
-                                    continue
                                     
                             games_to_process.append(game)
                             new_found_this_page += 1
