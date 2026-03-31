@@ -193,6 +193,10 @@ class BackgroundLoop(commands.Cog):
                 if clan_tag not in self.bot.processed_games:
                     self.bot.processed_games[clan_tag] = []
 
+                # --- CHECK FOR INITIAL SCAN ---
+                # If the processed games list is entirely empty, this is a fresh setup.
+                is_initial_scan = len(self.bot.processed_games[clan_tag]) == 0
+
                 try:
                     async with http_session.get(api_url, timeout=10) as response:
                         if response.status != 200:
@@ -217,7 +221,11 @@ class BackgroundLoop(commands.Cog):
                     continue
 
                 new_sessions.reverse()
-                print(f"Found {len(new_sessions)} new games for clan [{clan_tag}] in the last 2 hours.")
+                
+                if is_initial_scan:
+                    print(f"Initial Scan: Silently processing {len(new_sessions)} recent games for clan [{clan_tag}].")
+                else:
+                    print(f"Found {len(new_sessions)} new games for clan [{clan_tag}] in the last 2 hours.")
 
                 for session in new_sessions:
                     session_id = session.get("gameId")
@@ -237,19 +245,20 @@ class BackgroundLoop(commands.Cog):
                                     "end": info.get("end")
                                 }
                                 
-                                # 1. ANNOUNCE TO DISCORD
-                                for guild_id, data in list(self.bot.server_data.items()):
-                                    for tracker in data.get("trackers", []):
-                                        if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
-                                            channel = self.bot.get_channel(tracker["channel_id"])
-                                            if channel:
-                                                embed = await self.create_match_embed(
-                                                    http_session, clan_tag, session, 
-                                                    tracker.get("track_losses", False), 
-                                                    match_details_cache, clan_overall_stats_cache
-                                                )
-                                                if embed:
-                                                    await channel.send(embed=embed)
+                                # 1. ANNOUNCE TO DISCORD (Skipped if this is the first scan)
+                                if not is_initial_scan:
+                                    for guild_id, data in list(self.bot.server_data.items()):
+                                        for tracker in data.get("trackers", []):
+                                            if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
+                                                channel = self.bot.get_channel(tracker["channel_id"])
+                                                if channel:
+                                                    embed = await self.create_match_embed(
+                                                        http_session, clan_tag, session, 
+                                                        tracker.get("track_losses", False), 
+                                                        match_details_cache, clan_overall_stats_cache
+                                                    )
+                                                    if embed:
+                                                        await channel.send(embed=embed)
 
                                 # 2. UPDATE GLOBAL PLAYER STATS
                                 self.bot.player_data[clan_tag]["total_games"] += 1
