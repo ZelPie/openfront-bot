@@ -20,7 +20,6 @@ class LoadPlayers(commands.Cog):
     @app_commands.command(name="load_players", description="Automatically queue and load all history using a worker swarm.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., UN)", workers="Concurrent API workers (Max 10 to avoid IP bans).")
     async def load_players(self, interaction: discord.Interaction, clan_tag: str, workers: int = 5):
-        # 1. Check the Global Lock BEFORE doing anything else
         if getattr(self.bot, 'is_swarm_active', False):
             await interaction.response.send_message(
                 "**Global Swarm Lock Active!**\nAnother clan's history is currently being processed. To protect the bot from API bans, please wait for the current swarm to finish.", 
@@ -30,21 +29,19 @@ class LoadPlayers(commands.Cog):
 
         tag_upper = clan_tag.upper()
         
-        # Hard limit to protect the user from getting API-banned
         if workers > 10:
             workers = 10
-            msg = f"Capped workers at **10** to prevent API bans.\nScanning history for **[{tag_upper}]** to queue unprocessed games..."
+            msg = f"Capped workers at **10** to prevent API bans.\nPaging backward through API history for **[{tag_upper}]**..."
         else:
-            msg = f"Scanning history for **[{tag_upper}]**...\nI will spawn a swarm of **{workers} concurrent workers** to process missing games."
+            msg = f"Paging backward through API history for **[{tag_upper}]** to queue unprocessed games. This might take a minute..."
 
         await interaction.response.send_message(msg)
         
-        # 2. Engage the lock and dispatch the master controller
         self.bot.is_swarm_active = True
         self.bot.loop.create_task(self.master_process(tag_upper, workers, interaction.channel))
 
     async def master_process(self, tag_upper, workers, channel):
-        url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions"
+        base_url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions"
 
         if tag_upper not in self.bot.player_data:
             self.bot.player_data[tag_upper] = {"total_games": 0, "players": {}}
@@ -56,37 +53,81 @@ class LoadPlayers(commands.Cog):
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        await channel.send(f"Failed to load API for **[{tag_upper}]** (Status {resp.status}).")
-                        return
-                        
-                    sessions = await resp.json()
-                    if not sessions:
-                        await channel.send(f"No sessions found for **[{tag_upper}]**.")
-                        return
-
-                # --- 1. FILTERING PHASE ---
+                # --- 1. PAGINATION & FILTERING PHASE ---
                 games_to_process = []
-                for game in sessions:
-                    game_id = game.get("gameId")
-                    if not game_id: continue
-                    
-                    if game_id in self.bot.processed_games[tag_upper]:
-                        continue
+                seen_game_ids = set()
+                current_end_time = None
+                consecutive_processed_count = 0
+
+                while True:
+                    # Append the ?end parameter to go further back in time
+                    page_url = base_url
+                    if current_end_time:
+                        page_url += f"?end={current_end_time}"
                         
-                    if hasattr(self.bot, 'recent_games') and tag_upper in getattr(self.bot, 'recent_games', {}):
-                        if game_id in self.bot.recent_games[tag_upper]:
-                            continue
+                    async with session.get(page_url) as resp:
+                        if resp.status != 200:
+                            print(f"[{tag_upper}] API Error {resp.status} during pagination.")
+                            break
                             
-                    games_to_process.append(game)
+                        page_data = await resp.json()
+                        
+                        if not page_data or not isinstance(page_data, list):
+                            break # No more games returned, we reached the beginning of time!
+                            
+                        new_in_page = 0
+                        oldest_start = float('inf')
+                        
+                        for game in page_data:
+                            game_id = game.get("gameId")
+                            if not game_id or game_id in seen_game_ids:
+                                continue
+                                
+                            seen_game_ids.add(game_id)
+                            
+                            # Find the oldest game on this page to use as the boundary for the next page
+                            g_start = game.get("start")
+                            if g_start and g_start < oldest_start:
+                                oldest_start = g_start
+                                
+                            # Filter 1: Is it already in our permanent vault?
+                            if game_id in self.bot.processed_games[tag_upper]:
+                                consecutive_processed_count += 1
+                                continue
+                                
+                            # Filter 2: Is it in the live 2-hour window?
+                            if hasattr(self.bot, 'recent_games') and tag_upper in getattr(self.bot, 'recent_games', {}):
+                                if game_id in self.bot.recent_games[tag_upper]:
+                                    consecutive_processed_count += 1
+                                    continue
+                                    
+                            # It's a brand new, unseen historical game!
+                            games_to_process.append(game)
+                            new_in_page += 1
+                            consecutive_processed_count = 0 # Reset safety counter
+                            
+                        # Optimization: If we see 2,000 processed games in a row, we are deep in 
+                        # known territory. Stop paging backwards to save massive amounts of time!
+                        if consecutive_processed_count >= 2000:
+                            print(f"[{tag_upper}] Hit solid block of already-processed history. Stopping pagination early!")
+                            break
+                            
+                        # If the page was totally empty of valid data, stop
+                        if new_in_page == 0 and consecutive_processed_count == 0:
+                            break 
+                            
+                        # Set the end time for the next page to strictly BEFORE the oldest game we just saw
+                        current_end_time = oldest_start - 1
+                        
+                        print(f"[{tag_upper}] Paging... Queued {len(games_to_process)} unprocessed games so far.")
+                        await asyncio.sleep(0.3) # Gentle API paging
 
                 total_games = len(games_to_process)
                 if total_games == 0:
                     await channel.send(f"**[{tag_upper}]** is fully up to date! No historical games left to process.")
                     return
 
-                await channel.send(f"🚀 Found **{total_games}** unprocessed games! Unleashing the swarm...")
+                await channel.send(f"Pagination complete. Found **{total_games}** unprocessed games! Unleashing the swarm...")
                 print(f"[{tag_upper}] STARTING SWARM: {total_games} games distributed across {workers} workers.")
 
                 # --- 2. BUILD THE QUEUE ---
@@ -94,7 +135,6 @@ class LoadPlayers(commands.Cog):
                 for game in games_to_process:
                     queue.put_nowait(game)
 
-                # Use lists as mutable references to pass counters into the worker scopes
                 games_added = [0] 
                 new_players_count = [0]
                 games_skipped_recent = [0]
@@ -164,10 +204,7 @@ class LoadPlayers(commands.Cog):
                         except Exception as e:
                             print(f"[Worker {worker_id}] Error on {game_id}: {e}")
                             
-                        # Tell the queue this specific game is finished
                         queue.task_done()
-                        
-                        # Small delay to prevent the API from dropping connections
                         await asyncio.sleep(0.1) 
 
                 # --- 4. THE AUTO-SAVER DEFINITION ---
@@ -176,19 +213,15 @@ class LoadPlayers(commands.Cog):
                         await asyncio.sleep(60) # Wake up every 60 seconds
                         async with self.bot.save_lock:
                             self.bot.save_data()
-                        print(f"[{tag_upper}] Auto-saved progress to disk.")
+                        print(f"[{tag_upper}] 💾 Auto-saved progress to disk.")
 
                 # --- 5. UNLEASH THE SWARM ---
                 saver = asyncio.create_task(auto_saver())
                 worker_tasks = [asyncio.create_task(worker_task(i)) for i in range(workers)]
                 
-                # Halt the master script here until the workers empty the entire queue
                 await queue.join()
-                
-                # Cleanup
                 saver.cancel()
                 
-                # Final safe save
                 async with self.bot.save_lock:
                     self.bot.save_data()
                 
@@ -206,9 +239,7 @@ class LoadPlayers(commands.Cog):
         except Exception as e:
             await channel.send(f"An error occurred during the swarm load for **[{tag_upper}]**: {e}")
             print(f"Error in master_process for {tag_upper}: {e}")
-            
         finally:
-            # 3. Disengage the lock when finished (or if it crashes!) so the bot is ready again
             self.bot.is_swarm_active = False
 
 async def setup(bot):
