@@ -165,7 +165,7 @@ class StatsCmds(commands.Cog):
             await interaction.response.send_message(f"No players are currently being tracked for clan **[{tag_upper}]**.", ephemeral=True)
             return
             
-        embed = discord.Embed(title=f"Tracked Players for [{tag_upper}]", color=discord.Color.green())
+        embed = discord.Embed(title=f"Tracked Players for [{tag_upper}] | Total Games: {clan_db.get('total_games', 0)}", color=discord.Color.green())
         description = ""
         
         for p_id, stats in top_players:
@@ -188,39 +188,6 @@ class StatsCmds(commands.Cog):
         outstanding = total_games - processed_games
         
         await interaction.response.send_message(f"**[{tag_upper}]** has **{outstanding}** outstanding games that have not been processed yet. (Total: {total_games}, Processed: {processed_games})")
-
-    @app_commands.command(name="display_all_players", description="Load ALL player data for a specific clan.")
-    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", min_games="Minimum games played to be included in the list (Default: 5)")
-    async def display_all_players(self, interaction: discord.Interaction, clan_tag: str, min_games: int = 5):
-        await interaction.response.defer()
-        tag_upper = clan_tag.upper()
-
-        clan_db = self.bot.loaded_player_data.get(tag_upper)
-        if not clan_db:
-            await interaction.followup.send(f"No loaded player data found for clan **[{tag_upper}]**. Use `/load_players` to fetch data from the API first.", ephemeral=True)
-            return
-        
-        players = clan_db.get("players", {})
-        
-        sorted_players = sorted(
-            [x for x in players.items() if x[1].get("games_played", 0) >= min_games], 
-            key=lambda x: (x[1].get("wins", 0) / x[1].get("games_played", 0), x[1].get("games_played", 0)), 
-            reverse=True
-        )[:10]
-
-        embed = discord.Embed(title=f"Top 10 Players for [{tag_upper}] (Loaded Data)", color=discord.Color.purple())
-        description = ""
-
-        for p_id, stats in sorted_players:
-            games_played = stats.get("games_played", 0)
-            wins = stats.get("wins", 0)
-            losses = games_played - wins
-            winrate = (wins / games_played) * 100 if games_played > 0 else 0.0
-
-            description += f"**{p_id}** - Games: {games_played}, W/L: {wins}/{losses}, Win Rate: {winrate:.1f}%\n\n"
-
-        embed.description = description
-        await interaction.followup.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(StatsCmds(bot))

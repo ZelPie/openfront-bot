@@ -17,8 +17,8 @@ class LoadPlayers(commands.Cog):
             self.bot.is_swarm_active = False
 
     @app_commands.command(name="load_players", description="Automatically queue and load all history using a batched worker swarm.")
-    @app_commands.describe(clan_tag="The clan's tag (e.g., UN)", workers="Concurrent API workers (Max 10 to avoid IP bans).")
-    async def load_players(self, interaction: discord.Interaction, clan_tag: str, workers: int = 10):
+    @app_commands.describe(clan_tag="The clan's tag (e.g., UN)", workers="Concurrent API workers (Max 10). Recommended: 5")
+    async def load_players(self, interaction: discord.Interaction, clan_tag: str, workers: int = 5):
         if getattr(self.bot, 'is_swarm_active', False):
             await interaction.response.send_message(
                 "Global Swarm Lock Active! Another clan's history is currently being processed. Please wait.", 
@@ -39,23 +39,22 @@ class LoadPlayers(commands.Cog):
 
         if tag_upper not in self.bot.player_data:
             self.bot.player_data[tag_upper] = {"total_games": 0, "players": {}}
-        elif "total_games" not in self.bot.player_data[tag_upper]:
-            self.bot.player_data[tag_upper]["total_games"] = 0
-            
         if tag_upper not in self.bot.processed_games:
             self.bot.processed_games[tag_upper] = []
 
         one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
-        current_end_iso = one_hour_ago.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+        one_hour_ago_ms = int(one_hour_ago.timestamp() * 1000)
+        one_hour_ago_iso = one_hour_ago.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
 
         try:
             async with aiohttp.ClientSession() as session:
                 games_to_process = []
                 seen_game_ids = set()
+                current_end_iso = one_hour_ago_iso
                 consecutive_processed_count = 0
                 page_count = 0
 
-                # --- 1. GATHER ALL UNPROCESSED GAMES (From > 1 Hour Ago) ---
+                # --- 1. GATHER ALL UNPROCESSED GAMES ---
                 while True:
                     page_url = f"{base_url}?end={current_end_iso}"
                     
@@ -87,6 +86,11 @@ class LoadPlayers(commands.Cog):
                             if game_id in self.bot.processed_games[tag_upper]:
                                 consecutive_processed_count += 1
                                 continue
+                                
+                            if hasattr(self.bot, 'recent_games') and tag_upper in getattr(self.bot, 'recent_games', {}):
+                                if game_id in self.bot.recent_games[tag_upper]:
+                                    consecutive_processed_count += 1
+                                    continue
                                     
                             games_to_process.append(game)
                             new_found_this_page += 1
@@ -138,14 +142,18 @@ class LoadPlayers(commands.Cog):
                             is_win = game.get("hasWon", False)
                             
                             retries = 0
+                            max_retries = 10 # Increased from 5 to 10
                             
-                            # INFINITE RETRY LOOP: Try again until it successfully gets the data
-                            while True:
+                            while retries < max_retries:
                                 try:
                                     async with session.get(f"https://api.openfront.io/public/game/{gid}?turns=false", timeout=15) as g_resp:
                                         if g_resp.status == 200:
                                             g_data = await g_resp.json()
                                             info = g_data.get("info", {})
+                                            
+                                            g_start = info.get("start")
+                                            if g_start and int(g_start) >= one_hour_ago_ms:
+                                                break # Successfully skipped, break the retry loop
 
                                             players = info.get("players", [])
                                             counted_here = set()
@@ -174,32 +182,32 @@ class LoadPlayers(commands.Cog):
                                             processed_count[0] += 1
                                             self.bot.player_data[tag_upper]["total_games"] += 1
                                             self.bot.processed_games[tag_upper].append(gid)
+                                            break # Success! Break out of the retry loop.
                                             
-                                            # Standard delay after a successful fetch to pace the workers
-                                            await asyncio.sleep(0.3)
-                                            break # SUCCESS! Break out of the infinite retry loop and move to the next game.
-                                            
-                                        else:
-                                            # API threw an error (429 Rate Limit, 500 Server Error, etc.)
-                                            base_wait = min(60.0, 2 ** retries)
+                                        elif g_resp.status == 429:
+                                            # EXPONENTIAL BACKOFF WITH JITTER
+                                            # Waits 2s, then 4s, 8s, 16s... up to 30s max, plus random jitter to scatter workers
+                                            base_wait = min(30.0, 2 ** retries)
                                             jitter = random.uniform(0.1, 1.5)
                                             wait_time = base_wait + jitter
                                             
-                                            print(f"[Worker {wid}] API Error {g_resp.status} on {gid}. Retrying in {wait_time:.1f}s...")
+                                            print(f"[Worker {wid}] API Rate Limit (429) hit. Pausing for {wait_time:.1f}s before retry {retries + 1}/{max_retries}...")
                                             await asyncio.sleep(wait_time)
                                             retries += 1
+                                            continue
+                                        else:
+                                            # It's a 404 or 500 error. Break and move on.
+                                            break
 
                                 except Exception as e:
-                                    # Network timeout, disconnect, or JSON parse error
-                                    base_wait = min(60.0, 2 ** retries)
-                                    jitter = random.uniform(0.1, 1.5)
-                                    wait_time = base_wait + jitter
-                                    
-                                    print(f"[Worker {wid}] Network Error on {gid}: {e}. Retrying in {wait_time:.1f}s...")
+                                    # Network timeout or disconnect
+                                    wait_time = 2.0 + random.uniform(0.1, 1.0)
                                     await asyncio.sleep(wait_time)
                                     retries += 1
+                                finally:
+                                    # Increased baseline delay from 0.1 to 0.3 to reduce overall API pressure
+                                    await asyncio.sleep(0.5)
                                 
-                        # The worker has finished its batch of 25
                         batches_finished[0] += 1
                         if batches_finished[0] % 10 == 0:
                             print(f"[{tag_upper}] Finished {batches_finished[0]}/{len(batches)} batches. ({processed_count[0]} games added)")
