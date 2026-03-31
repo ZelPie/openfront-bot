@@ -177,7 +177,6 @@ class BackgroundLoop(commands.Cog):
                 if tracker.get("clan_tag"):
                     unique_clans.add(tracker["clan_tag"])
         
-        # Calculate ISO 8601 Timestamp for exactly 2 hours ago
         two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
         iso_timestamp = two_hours_ago.strftime('%Y-%m-%dT%H:%M:%S.000Z')
         
@@ -189,7 +188,6 @@ class BackgroundLoop(commands.Cog):
             for clan_tag in unique_clans:
                 api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions?start={iso_timestamp}"
                 
-                # Ensure all dictionaries exist for this clan
                 if clan_tag not in self.bot.player_data:
                     self.bot.player_data[clan_tag] = {"total_games": 0, "players": {}}
                 if clan_tag not in self.bot.processed_games:
@@ -208,34 +206,19 @@ class BackgroundLoop(commands.Cog):
                 if not sessions or not isinstance(sessions[0], dict) or not sessions[0].get("gameId"):
                     continue
 
-                # Extract a pure list of IDs currently in the 2-hour window
-                fetched_ids = [s.get("gameId") for s in sessions if s.get("gameId")]
-
-                # FIRST TIME CLAN SETUP: Prevent 2-hour backlog spam on fresh trackers
-                if clan_tag not in getattr(self.bot, 'recent_games', {}):
-                    if not hasattr(self.bot, 'recent_games'):
-                        self.bot.recent_games = {}
-                    print(f"Initializing rolling 2-hour window for [{clan_tag}]. Skipping backlog.")
-                    self.bot.recent_games[clan_tag] = fetched_ids
-                    self.bot.save_data()
-                    continue
-
+                # Filter purely based on our centralized processed_games vault
                 new_sessions = []
                 for session in sessions:
                     session_id = session.get("gameId")
-                    if session_id and session_id not in self.bot.recent_games[clan_tag]:
+                    if session_id and session_id not in self.bot.processed_games[clan_tag]:
                         new_sessions.append(session)
 
                 if not new_sessions:
-                    # Maintain the rolling window by overwriting it with current IDs
-                    self.bot.recent_games[clan_tag] = fetched_ids
                     continue
 
-                # Reverse to process games chronologically (Oldest -> Newest)
                 new_sessions.reverse()
                 print(f"Found {len(new_sessions)} new games for clan [{clan_tag}] in the last 2 hours.")
 
-                # Process the brand new games
                 for session in new_sessions:
                     session_id = session.get("gameId")
                     is_win = session.get("hasWon", False)
@@ -248,16 +231,13 @@ class BackgroundLoop(commands.Cog):
                                 info = game_data.get("info", {})
                                 all_players = info.get("players", [])
                                 
-                                # Cache players AND timestamps for the embed builder
                                 match_details_cache[session_id] = {
                                     "players": all_players,
                                     "start": info.get("start"),
                                     "end": info.get("end")
                                 }
                                 
-                                # -------------------------------------------------------------
-                                # 1. ANNOUNCE TO DISCORD TRACKERS
-                                # -------------------------------------------------------------
+                                # 1. ANNOUNCE TO DISCORD
                                 for guild_id, data in list(self.bot.server_data.items()):
                                     for tracker in data.get("trackers", []):
                                         if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
@@ -271,46 +251,39 @@ class BackgroundLoop(commands.Cog):
                                                 if embed:
                                                     await channel.send(embed=embed)
 
-                                # -------------------------------------------------------------
-                                # 2. UPDATE GLOBAL PLAYER STATS (If not already processed)
-                                # -------------------------------------------------------------
-                                if session_id not in self.bot.processed_games[clan_tag]:
-                                    self.bot.player_data[clan_tag]["total_games"] += 1
-                                    self.bot.processed_games[clan_tag].append(session_id)
-                                    
-                                    already_counted_players = set()
-                                    for p in all_players:
-                                        if p.get("clanTag", "").upper() == clan_tag.upper():
-                                            p_name = p.get("username", "Unknown")
-                                            if p_name in already_counted_players:
-                                                continue
+                                # 2. UPDATE GLOBAL PLAYER STATS
+                                self.bot.player_data[clan_tag]["total_games"] += 1
+                                self.bot.processed_games[clan_tag].append(session_id)
+                                
+                                already_counted_players = set()
+                                for p in all_players:
+                                    if p.get("clanTag", "").upper() == clan_tag.upper():
+                                        p_name = p.get("username", "Unknown")
+                                        if p_name in already_counted_players:
+                                            continue
 
-                                            already_counted_players.add(p_name)
+                                        already_counted_players.add(p_name)
+                                        
+                                        if p_name not in self.bot.player_data[clan_tag]["players"]:
+                                            self.bot.player_data[clan_tag]["players"][p_name] = {"name": [p_name], "games_played": 0, "wins": 0}
                                             
-                                            if p_name not in self.bot.player_data[clan_tag]["players"]:
-                                                self.bot.player_data[clan_tag]["players"][p_name] = {"name": [p_name], "games_played": 0, "wins": 0}
-                                                
-                                            p_stats = self.bot.player_data[clan_tag]["players"][p_name]
+                                        p_stats = self.bot.player_data[clan_tag]["players"][p_name]
+                                        
+                                        if not isinstance(p_stats["name"], list):
+                                            p_stats["name"] = [p_stats["name"]]
                                             
-                                            if not isinstance(p_stats["name"], list):
-                                                p_stats["name"] = [p_stats["name"]]
-                                                
-                                            if p_name not in p_stats["name"]:
-                                                p_stats["name"].append(p_name)
-                                                
-                                            p_stats["games_played"] += 1
-                                            if is_win:
-                                                p_stats["wins"] += 1
+                                        if p_name not in p_stats["name"]:
+                                            p_stats["name"].append(p_name)
+                                            
+                                        p_stats["games_played"] += 1
+                                        if is_win:
+                                            p_stats["wins"] += 1
 
                     except Exception as e:
                         print(f"Failed to process data for session {session_id}: {e}")
 
-                # After all new sessions are processed, update the rolling window 
-                # so we don't announce these games again on the next loop.
-                self.bot.recent_games[clan_tag] = fetched_ids
                 data_changed = True
 
-            # Save once at the end of the loop if anything updated
             if data_changed:
                 self.bot.save_data()
 

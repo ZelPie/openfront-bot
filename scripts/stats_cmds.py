@@ -182,12 +182,26 @@ class StatsCmds(commands.Cog):
     @app_commands.command(name="outstanding_games", description="Display the number of games that have not been processed for a specific clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)")
     async def outstanding_games(self, interaction: discord.Interaction, clan_tag: str):
+        await interaction.response.defer()
         tag_upper = clan_tag.upper()
-        total_games = self.bot.loaded_player_data.get(tag_upper, {}).get("total_games", 0)
-        processed_games = len(self.bot.processed_games.get(tag_upper, []))
-        outstanding = total_games - processed_games
         
-        await interaction.response.send_message(f"**[{tag_upper}]** has **{outstanding}** outstanding games that have not been processed yet. (Total: {total_games}, Processed: {processed_games})")
+        processed_games = len(self.bot.processed_games.get(tag_upper, []))
+        
+        url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as response:
+                    if response.status == 200:
+                        dat = await response.json()
+                        total_games = dat.get("clan", {}).get("games", 0)
+                        
+                        outstanding = max(0, total_games - processed_games)
+                        
+                        await interaction.followup.send(f"**[{tag_upper}]** has **{outstanding}** outstanding games that have not been processed yet. (Total: {total_games}, Processed: {processed_games})")
+                    else:
+                        await interaction.followup.send(f"Could not fetch total games for **[{tag_upper}]** from the API.")
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred while fetching clan info: {e}")
 
 async def setup(bot):
     await bot.add_cog(StatsCmds(bot))

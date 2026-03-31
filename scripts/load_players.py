@@ -39,6 +39,8 @@ class LoadPlayers(commands.Cog):
 
         if tag_upper not in self.bot.player_data:
             self.bot.player_data[tag_upper] = {"total_games": 0, "players": {}}
+        elif "total_games" not in self.bot.player_data[tag_upper]:
+            self.bot.player_data[tag_upper]["total_games"] = 0
         if tag_upper not in self.bot.processed_games:
             self.bot.processed_games[tag_upper] = []
 
@@ -86,11 +88,6 @@ class LoadPlayers(commands.Cog):
                             if game_id in self.bot.processed_games[tag_upper]:
                                 consecutive_processed_count += 1
                                 continue
-                                
-                            if hasattr(self.bot, 'recent_games') and tag_upper in getattr(self.bot, 'recent_games', {}):
-                                if game_id in self.bot.recent_games[tag_upper]:
-                                    consecutive_processed_count += 1
-                                    continue
                                     
                             games_to_process.append(game)
                             new_found_this_page += 1
