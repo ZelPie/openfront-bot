@@ -176,7 +176,7 @@ class LoadPlayers(commands.Cog):
                         await asyncio.sleep(60) # Wake up every 60 seconds
                         async with self.bot.save_lock:
                             self.bot.save_data()
-                        print(f"[{tag_upper}] 💾 Auto-saved progress to disk.")
+                        print(f"[{tag_upper}] Auto-saved progress to disk.")
 
                 # --- 5. UNLEASH THE SWARM ---
                 saver = asyncio.create_task(auto_saver())
@@ -204,7 +204,7 @@ class LoadPlayers(commands.Cog):
                 await channel.send(embed=embed)
 
         except Exception as e:
-            await channel.send(f"❌ An error occurred during the swarm load for **[{tag_upper}]**: {e}")
+            await channel.send(f"An error occurred during the swarm load for **[{tag_upper}]**: {e}")
             print(f"Error in master_process for {tag_upper}: {e}")
             
         finally:
