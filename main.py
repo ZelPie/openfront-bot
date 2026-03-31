@@ -13,18 +13,23 @@ token = os.getenv('BOT_TOKEN')
 DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "tracking_data.json")
 PLAYER_DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "player_data.json")
 LOADED_PLAYER_DATA = os.path.join(os.path.dirname(__file__), "bot_data", "loaded_player_data.json")
-PROCESSED_GAMES_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "processed_games.json")
 RECENT_GAMES_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "recent_games.json")
+
+PROCESSED_GAMES_DIR = os.path.join(os.path.dirname(__file__), "bot_data", "processed_games")
+LEGACY_PROCESSED_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "processed_games.json")
 
 if not os.path.exists(os.path.dirname(DATA_FILE)):
     os.makedirs(os.path.dirname(DATA_FILE))
+    
+# Ensure the new directory exists
+os.makedirs(PROCESSED_GAMES_DIR, exist_ok=True)
 
 # Attach data directly to the bot so it can be accessed from any Cog
 bot.server_data = {}
 bot.player_data = {}
 bot.loaded_player_data = {}
-bot.processed_games = {}
 bot.recent_games = {}
+bot.processed_games = {} 
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -51,18 +56,38 @@ def load_data():
             bot.loaded_player_data = json.load(f)
             print(f"Loaded cached player data for {len(bot.loaded_player_data)} clans.")
             
-    if os.path.exists(PROCESSED_GAMES_FILE):
-        with open(PROCESSED_GAMES_FILE, "r") as f:
-            bot.processed_games = json.load(f)
-            # Count the total games across all clan lists
-            total_games = sum(len(games) for games in bot.processed_games.values())
-            print(f"Loaded {total_games} processed games across {len(bot.processed_games)} clans.")
-    
     if os.path.exists(RECENT_GAMES_FILE):
         with open(RECENT_GAMES_FILE, "r") as f:
             bot.recent_games = json.load(f)
-            print(f"Loaded recent games for {len(bot.recent_games)} clans.")
 
+    # --- AUTO MIGRATION FROM SINGLE FILE TO SEPARATE FILES ---
+    if os.path.exists(LEGACY_PROCESSED_FILE):
+        print("Migrating legacy processed_games.json to separate clan files...")
+        with open(LEGACY_PROCESSED_FILE, "r") as f:
+            bot.processed_games = json.load(f)
+            
+        for clan_tag, games in bot.processed_games.items():
+            filepath = os.path.join(PROCESSED_GAMES_DIR, f"{clan_tag}.json")
+            with open(filepath, "w") as out_f:
+                json.dump(games, out_f)
+                
+        # Rename old file so it isn't parsed again
+        os.rename(LEGACY_PROCESSED_FILE, LEGACY_PROCESSED_FILE + ".bak")
+        print("Migration complete! Old file renamed to .bak")
+    else:
+        # Load directly from the new separated directory
+        for filename in os.listdir(PROCESSED_GAMES_DIR):
+            if filename.endswith(".json"):
+                clan_tag = filename[:-5] # Strip the .json
+                filepath = os.path.join(PROCESSED_GAMES_DIR, filename)
+                try:
+                    with open(filepath, "r") as f:
+                        bot.processed_games[clan_tag] = json.load(f)
+                except Exception as e:
+                    print(f"Error loading {filename}: {e}")
+                    
+    total_games = sum(len(games) for games in bot.processed_games.values())
+    print(f"Loaded {total_games} UNLIMITED processed games across {len(bot.processed_games)} clans.")
 
 # Attach the save function to the bot as well
 def save_data():
@@ -73,15 +98,16 @@ def save_data():
         json.dump(bot.player_data, f, indent=4) 
     with open(LOADED_PLAYER_DATA, "w") as f:
         json.dump(bot.loaded_player_data, f, indent=4)
-    with open(PROCESSED_GAMES_FILE, "w") as f:
-        # Keep only the last 5000 games so the file doesn't grow infinitely large
-        save_processed = {
-            clan: games[-5000:] for clan, games in bot.processed_games.items()
-        }
-        json.dump(save_processed, f, indent=4)
     with open(RECENT_GAMES_FILE, "w") as f:
         json.dump(bot.recent_games, f, indent=4)
-
+        
+    # Save unlimited processed games to their own separate files!
+    os.makedirs(PROCESSED_GAMES_DIR, exist_ok=True)
+    for clan_tag, games in bot.processed_games.items():
+        filepath = os.path.join(PROCESSED_GAMES_DIR, f"{clan_tag}.json")
+        with open(filepath, "w") as f:
+            # We removed the slicing limit here, it will safely store unlimited games!
+            json.dump(games, f)
 
 bot.save_data = save_data
 load_data()
