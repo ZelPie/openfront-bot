@@ -14,6 +14,7 @@ DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "tracking_data.j
 PLAYER_DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "player_data.json")
 LOADED_PLAYER_DATA = os.path.join(os.path.dirname(__file__), "bot_data", "loaded_player_data.json")
 PROCESSED_GAMES_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "processed_games.json")
+RECENT_GAMES_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "recent_games.json")
 
 if not os.path.exists(os.path.dirname(DATA_FILE)):
     os.makedirs(os.path.dirname(DATA_FILE))
@@ -22,7 +23,8 @@ if not os.path.exists(os.path.dirname(DATA_FILE)):
 bot.server_data = {}
 bot.player_data = {}
 bot.loaded_player_data = {}
-bot.processed_games = {} # Global tracking list for game IDs
+bot.processed_games = {}
+bot.recent_games = {}
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -56,6 +58,10 @@ def load_data():
             total_games = sum(len(games) for games in bot.processed_games.values())
             print(f"Loaded {total_games} processed games across {len(bot.processed_games)} clans.")
     
+    if os.path.exists(RECENT_GAMES_FILE):
+        with open(RECENT_GAMES_FILE, "r") as f:
+            bot.recent_games = json.load(f)
+            print(f"Loaded recent games for {len(bot.recent_games)} clans.")
 
 
 # Attach the save function to the bot as well
@@ -73,6 +79,9 @@ def save_data():
             clan: games[-5000:] for clan, games in bot.processed_games.items()
         }
         json.dump(save_processed, f, indent=4)
+    with open(RECENT_GAMES_FILE, "w") as f:
+        json.dump(bot.recent_games, f, indent=4)
+
 
 bot.save_data = save_data
 load_data()
