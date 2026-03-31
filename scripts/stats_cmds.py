@@ -179,6 +179,16 @@ class StatsCmds(commands.Cog):
         embed.description = description
         await interaction.response.send_message(embed=embed)
     
+    @app_commands.command(name="outstanding_games", description="Display the number of games that have not been processed for a specific clan.")
+    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)")
+    async def outstanding_games(self, interaction: discord.Interaction, clan_tag: str):
+        tag_upper = clan_tag.upper()
+        total_games = self.bot.loaded_player_data.get(tag_upper, {}).get("total_games", 0)
+        processed_games = len(self.bot.processed_games.get(tag_upper, []))
+        outstanding = total_games - processed_games
+        
+        await interaction.response.send_message(f"**[{tag_upper}]** has **{outstanding}** outstanding games that have not been processed yet. (Total: {total_games}, Processed: {processed_games})")
+
     @app_commands.command(name="display_all_players", description="Load ALL player data for a specific clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", min_games="Minimum games played to be included in the list (Default: 5)")
     async def display_all_players(self, interaction: discord.Interaction, clan_tag: str, min_games: int = 5):
