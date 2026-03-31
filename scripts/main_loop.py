@@ -26,19 +26,62 @@ class BackgroundLoop(commands.Cog):
         score = session.get("score", 0)
         total_players = session.get("totalPlayerCount", "?")
 
+        # --- 1. Attempt to grab the time from the surface-level session API ---
+        raw_start = session.get("start")
+        raw_end = session.get("end")
+
         all_players = []
+        
+        # --- 2. Check the cache or fetch detailed game data ---
         if session_id in match_cache:
-            all_players = match_cache[session_id]
+            cache_data = match_cache[session_id]
+            all_players = cache_data.get("players", [])
+            if not raw_start: raw_start = cache_data.get("start")
+            if not raw_end: raw_end = cache_data.get("end")
         else:
             game_url = f"https://api.openfront.io/public/game/{session_id}?turns=false"
             try:
                 async with http_session.get(game_url, timeout=10) as game_response:
                     if game_response.status == 200:
                         game_data = await game_response.json()
-                        all_players = game_data.get("info", {}).get("players", [])
-                match_cache[session_id] = all_players
+                        info = game_data.get("info", {})
+                        all_players = info.get("players", [])
+                        
+                        # If surface API didn't have the time, grab it from the deep API
+                        if not raw_start: raw_start = info.get("start")
+                        if not raw_end: raw_end = info.get("end")
+                        
+                        # Save players and times to the cache
+                        match_cache[session_id] = {"players": all_players, "start": raw_start, "end": raw_end}
             except Exception as e:
                 print(f"Failed to fetch player details for session {session_id}: {e}")
+
+        # --- 3. Parse the time, duration, and format for Discord ---
+        start_display = "Unknown"
+        end_display = "Unknown"
+        duration_display = "Unknown"
+
+        if raw_start and raw_end:
+            try:
+                # Convert milliseconds to standard UNIX seconds
+                start_sec = int(int(raw_start) / 1000)
+                end_sec = int(int(raw_end) / 1000)
+                
+                # Format for Discord Dynamic Timestamps (Outputs e.g. "9:00 PM")
+                start_display = f"<t:{start_sec}:t>" 
+                end_display = f"<t:{end_sec}:t>"
+                
+                # Calculate Duration
+                duration_sec = end_sec - start_sec
+                m, s = divmod(duration_sec, 60)
+                h, m = divmod(m, 60)
+                
+                if h > 0:
+                    duration_display = f"**{h}h {m}m {s}s**"
+                else:
+                    duration_display = f"**{m}m {s}s**"
+            except Exception as e:
+                print(f"Could not parse time for {session_id}: {e}")
 
         clan_players = [
             f"``{p.get('username', 'Unknown')}``" for p in all_players 
@@ -75,14 +118,54 @@ class BackgroundLoop(commands.Cog):
             rating_text = f"**{score}** Weighted Wins"
 
         embed = discord.Embed(title=title, color=color)
+        
+        # --- 4. Add the new time fields to your Embed ---
+        embed.add_field(name="Started", value=start_display, inline=True)
+        embed.add_field(name="Ended", value=end_display, inline=True)
+        embed.add_field(name="Duration", value=duration_display, inline=True)
+        
         embed.add_field(name="Rating Change", value=rating_text, inline=False)
         embed.add_field(name="Clan Players", value = f"``{player_count}`` / ``{total_players}``", inline=True)
         embed.add_field(name="Gamemode", value=f"{gamemode} ({num_teams} Teams)", inline=True)
         embed.add_field(name="Clan Players in Match", value=f"{player_names}", inline=False)
         embed.add_field(name="New Overall Clan Stats", value=f"Total: **{overall_wins}W** - **{overall_losses}L** (W/L: **{overall_wl:.2f}**)", inline=False)
-        embed.set_footer(text=f"Match ID: {session_id}")
+        
+        # Adding an absolute timestamp at the bottom as a fallback
+        if raw_end:
+            embed.set_footer(text=f"Match ID: {session_id} • Ended")
+        else:
+            embed.set_footer(text=f"Match ID: {session_id}")
 
         return embed
+
+    @app_commands.command(name="test", description="Test the embed output using the latest game from clan UN.")
+    async def test_embed(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        clan_tag = "UN" 
+        api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions"
+        
+        try:
+            async with aiohttp.ClientSession() as http_session:
+                async with http_session.get(api_url, timeout=10) as response:
+                    if response.status == 200:
+                        api_data = await response.json()
+                        sessions = list(api_data) if isinstance(api_data, list) else [api_data]
+                        
+                        if not sessions or not sessions[0].get("gameId"):
+                            await interaction.followup.send(f"Could not find any recent valid games for [{clan_tag}].")
+                            return
+                        
+                        latest_session = sessions[0] 
+                        
+                        embed = await self.create_match_embed(http_session, clan_tag, latest_session, track_losses=True)
+                        if embed:
+                            await interaction.followup.send(content=f"**TEST MODE:** Latest match for [{clan_tag}]", embed=embed)
+                        else:
+                            await interaction.followup.send("Failed to build embed.")
+                    else:
+                        await interaction.followup.send(f"API Error: {response.status}")
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred during test: {e}")
 
     @tasks.loop(seconds=15) 
     async def check_clan_stats(self):
@@ -129,7 +212,9 @@ class BackgroundLoop(commands.Cog):
                 fetched_ids = [s.get("gameId") for s in sessions if s.get("gameId")]
 
                 # FIRST TIME CLAN SETUP: Prevent 2-hour backlog spam on fresh trackers
-                if clan_tag not in self.bot.recent_games:
+                if clan_tag not in getattr(self.bot, 'recent_games', {}):
+                    if not hasattr(self.bot, 'recent_games'):
+                        self.bot.recent_games = {}
                     print(f"Initializing rolling 2-hour window for [{clan_tag}]. Skipping backlog.")
                     self.bot.recent_games[clan_tag] = fetched_ids
                     self.bot.save_data()
@@ -160,8 +245,15 @@ class BackgroundLoop(commands.Cog):
                         async with http_session.get(game_url, timeout=10) as game_resp:
                             if game_resp.status == 200:
                                 game_data = await game_resp.json()
-                                all_players = game_data.get("info", {}).get("players", [])
-                                match_details_cache[session_id] = all_players 
+                                info = game_data.get("info", {})
+                                all_players = info.get("players", [])
+                                
+                                # Cache players AND timestamps for the embed builder
+                                match_details_cache[session_id] = {
+                                    "players": all_players,
+                                    "start": info.get("start"),
+                                    "end": info.get("end")
+                                }
                                 
                                 # -------------------------------------------------------------
                                 # 1. ANNOUNCE TO DISCORD TRACKERS
