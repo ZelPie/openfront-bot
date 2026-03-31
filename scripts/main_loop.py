@@ -159,8 +159,8 @@ class BackgroundLoop(commands.Cog):
             await interaction.followup.send(f"An error occurred during test: {e}")
 
     # --- THE SCOUT ---
-    # Scans the surface API every 15 seconds and adds missing games to the queue
-    @tasks.loop(seconds=15) 
+    # Scans the surface API every 30 seconds and adds missing games to the queue
+    @tasks.loop(seconds=30) 
     async def check_clan_stats(self):
         unique_clans = set()
         for data in list(self.bot.server_data.values()):
