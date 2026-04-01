@@ -8,6 +8,9 @@ from datetime import datetime, timedelta, timezone
 class BackgroundLoop(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+        if not hasattr(self.bot, 'save_lock'):
+            self.bot.save_lock = asyncio.Lock()
         
         # --- Live Tracking Queue System ---
         self.live_queue = asyncio.Queue()
@@ -290,7 +293,10 @@ class BackgroundLoop(commands.Cog):
 
                                 # Success! Clean up and Save.
                                 self.queued_games.discard(session_id)
-                                self.bot.save_data()
+
+                                async with self.bot.save_lock:
+                                    self.bot.save_data()
+                                
                                 if not is_initial_scan:
                                     print(f"Successfully processed & announced {session_id}. HasWon: {is_win}")
 

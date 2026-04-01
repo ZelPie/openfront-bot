@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import tasks, commands
 from discord import app_commands
 import aiohttp
 import asyncio
@@ -35,10 +35,15 @@ class LoadPlayers(commands.Cog):
     async def background_loader(self, tag_upper, channel):
         base_url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions"
 
+        # --- DATA INITIALIZATION ---
         if tag_upper not in self.bot.player_data:
             self.bot.player_data[tag_upper] = {"total_games": 0, "players": {}}
         elif "total_games" not in self.bot.player_data[tag_upper]:
             self.bot.player_data[tag_upper]["total_games"] = 0
+            
+        # Initialize persistent timer
+        if "load_time_seconds" not in self.bot.player_data[tag_upper]:
+            self.bot.player_data[tag_upper]["load_time_seconds"] = 0
             
         if tag_upper not in self.bot.processed_games:
             self.bot.processed_games[tag_upper] = []
@@ -105,6 +110,17 @@ class LoadPlayers(commands.Cog):
 
                 await channel.send(f"Found **{total_to_do}** missing games for clan **[{tag_upper}]**. Starting persistent queue...")
                 print(f"[{tag_upper}] STARTING PERSISTENT QUEUE for {total_to_do} games for clan {tag_upper}...")
+
+                # --- PERSISTENT TIMER TASK ---
+                async def timer():
+                    try:
+                        while True:
+                            await asyncio.sleep(1)
+                            self.bot.player_data[tag_upper]["load_time_seconds"] += 1
+                    except asyncio.CancelledError:
+                        pass
+                
+                timer_task = asyncio.create_task(timer())
 
                 processed_count = [0]
                 new_players = [0]
@@ -192,7 +208,7 @@ class LoadPlayers(commands.Cog):
                         if success and processed_count[0] % 50 == 0 and processed_count[0] > 0:
                             print(f"[{tag_upper}] Backfill progress: {processed_count[0]} / {total_to_do}...")
                             
-                        # Crucial Pacing: 1.5 seconds per worker prevents 429s entirely
+                        # Crucial Pacing: 0.9 seconds per worker prevents 429s entirely
                         await asyncio.sleep(0.9)
 
                 # Auto-saver task
@@ -206,7 +222,7 @@ class LoadPlayers(commands.Cog):
                     except asyncio.CancelledError:
                         pass
 
-                # Start the saver and exactly 3 concurrent workers
+                # Start the saver, timer, and exactly 3 concurrent workers
                 saver_task = asyncio.create_task(auto_saver())
                 workers_list = [asyncio.create_task(worker(i)) for i in range(3)]
                 
@@ -215,14 +231,24 @@ class LoadPlayers(commands.Cog):
                 
                 # Cleanup background tasks once everything is processed
                 saver_task.cancel()
+                timer_task.cancel()
                 for w in workers_list:
                     w.cancel()
                 
-                # --- 4. FINAL SAVE ---
+                # --- 4. FORMAT FINAL TIME & SAVE ---
+                total_secs = self.bot.player_data[tag_upper].get("load_time_seconds", 0)
+                m, s = divmod(total_secs, 60)
+                h, m = divmod(m, 60)
+                formatted_time = f"{h:03d}:{m:02d}:{s:02d}"
+
                 async with self.bot.save_lock:
                     self.bot.save_data()
                 
-                await channel.send(f"**[{tag_upper}]** Background load complete! Every game was successfully found and processed. Added **{processed_count[0]}** games and **{new_players[0]}** new players.")
+                await channel.send(
+                    f"**[{tag_upper}]** Background load complete! Every game was successfully found and processed.\n"
+                    f"Added **{processed_count[0]}** games and **{new_players[0]}** new players.\n"
+                    f"⏱ **Total Time Taken:** `{formatted_time}`"
+                )
 
         except Exception as e:
             await channel.send(f"An error occurred during backfill: {e}")
