@@ -3,3 +3,4 @@
 .history
 .vshistory
 .git.bak
+*.pyc
