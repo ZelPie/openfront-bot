@@ -235,7 +235,7 @@ class BackgroundLoop(commands.Cog):
                                     if not is_initial_scan:
                                         print(f"Data for {session_id} is still empty. Re-queueing...")
                                     self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
-                                    await asyncio.sleep(1) 
+                                    await asyncio.sleep(0.5) 
                                     self.live_queue.task_done()
                                     continue # Skip the rest of the loop
                                     
@@ -307,7 +307,7 @@ class BackgroundLoop(commands.Cog):
                         self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
                         
                     self.live_queue.task_done()
-                    await asyncio.sleep(1) # Pace the live tracker so it doesn't fight the backfill
+                    await asyncio.sleep(0.5) # Pace the live tracker so it doesn't fight the backfill
                     
                 except Exception as e:
                     print(f"Live Queue Critical Error: {e}")
