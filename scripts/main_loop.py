@@ -13,7 +13,6 @@ class BackgroundLoop(commands.Cog):
         self.live_queue = asyncio.Queue()
         self.queued_games = set() # Keeps track of what's already in line
         self.match_details_cache = {}
-        self.clan_overall_stats_cache = {}
         
         # Start the background worker and the 15-second scout
         self.worker_task = self.bot.loop.create_task(self.live_worker())
@@ -24,9 +23,8 @@ class BackgroundLoop(commands.Cog):
         if hasattr(self, 'worker_task'):
             self.worker_task.cancel()
 
-    async def create_match_embed(self, http_session, clan_tag, session, track_losses=True, match_cache=None, stats_cache=None):
+    async def create_match_embed(self, http_session, clan_tag, session, track_losses=True, match_cache=None):
         if match_cache is None: match_cache = {}
-        if stats_cache is None: stats_cache = {}
 
         session_id = session.get("gameId", "Unknown")
         is_win = session.get("hasWon", False)
@@ -88,18 +86,17 @@ class BackgroundLoop(commands.Cog):
         ]
         player_names = ", ".join(clan_players) if clan_players else "Unknown Players"
 
-        if clan_tag not in stats_cache:
-            stats_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}"
-            try:
-                async with http_session.get(stats_url, timeout=5) as stat_resp:
-                    if stat_resp.status == 200:
-                        stats_cache[clan_tag] = await stat_resp.json()
-                    else:
-                        stats_cache[clan_tag] = {}
-            except Exception:
-                stats_cache[clan_tag] = {}
+        stats_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}"
+        try:
+            async with http_session.get(stats_url, timeout=5) as stat_resp:
+                if stat_resp.status == 200:
+                    clan_data = await stat_resp.json()
+                else:
+                    clan_data = {}
+        except Exception:
+            clan_data = {}
                 
-        c_stats = stats_cache.get(clan_tag, {}).get("clan", {})
+        c_stats = clan_data.get("clan", {})
         overall_wins = c_stats.get("wins", 0)
         overall_games = c_stats.get("games", 0)
         overall_losses = overall_games - overall_wins
@@ -134,9 +131,9 @@ class BackgroundLoop(commands.Cog):
         return embed
 
     @app_commands.command(name="test", description="Test the embed output using the latest game from clan UN.")
-    async def test_embed(self, interaction: discord.Interaction):
+    @app_commands.describe(clan_tag="The clan tag to test with (default: UN)")
+    async def test_embed(self, interaction: discord.Interaction, clan_tag: str = "UN"):
         await interaction.response.defer()
-        clan_tag = "UN" 
         api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions"
         try:
             async with aiohttp.ClientSession() as http_session:
@@ -238,7 +235,7 @@ class BackgroundLoop(commands.Cog):
                                     if not is_initial_scan:
                                         print(f"Data for {session_id} is still empty. Re-queueing...")
                                     self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
-                                    await asyncio.sleep(2) 
+                                    await asyncio.sleep(1) 
                                     self.live_queue.task_done()
                                     continue # Skip the rest of the loop
                                     
@@ -259,7 +256,7 @@ class BackgroundLoop(commands.Cog):
                                                     embed = await self.create_match_embed(
                                                         http_session, clan_tag, session, 
                                                         tracker.get("track_losses", False), 
-                                                        self.match_details_cache, self.clan_overall_stats_cache
+                                                        self.match_details_cache
                                                     )
                                                     if embed:
                                                         await channel.send(embed=embed)
@@ -310,7 +307,7 @@ class BackgroundLoop(commands.Cog):
                         self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
                         
                     self.live_queue.task_done()
-                    await asyncio.sleep(1.5) # Pace the live tracker so it doesn't fight the backfill
+                    await asyncio.sleep(1) # Pace the live tracker so it doesn't fight the backfill
                     
                 except Exception as e:
                     print(f"Live Queue Critical Error: {e}")

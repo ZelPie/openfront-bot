@@ -176,7 +176,7 @@ class LoadPlayers(commands.Cog):
                                             
                                 elif g_resp.status == 429:
                                     print(f"[Worker {wid}] 429 Rate Limit. Pausing for 10s...")
-                                    await asyncio.sleep(10)
+                                    await asyncio.sleep(5)
                                     queue.put_nowait(game)
                                 else:
                                     print(f"[Worker {wid}] API Error {g_resp.status} on {gid}. Re-queueing...")
@@ -193,7 +193,7 @@ class LoadPlayers(commands.Cog):
                             print(f"[{tag_upper}] Backfill progress: {processed_count[0]} / {total_to_do}...")
                             
                         # Crucial Pacing: 1.5 seconds per worker prevents 429s entirely
-                        await asyncio.sleep(1.5)
+                        await asyncio.sleep(0.9)
 
                 # Auto-saver task
                 async def auto_saver():
@@ -208,7 +208,7 @@ class LoadPlayers(commands.Cog):
 
                 # Start the saver and exactly 3 concurrent workers
                 saver_task = asyncio.create_task(auto_saver())
-                workers_list = [asyncio.create_task(worker(i)) for i in range(2)]
+                workers_list = [asyncio.create_task(worker(i)) for i in range(3)]
                 
                 # Wait until the queue is completely empty
                 await queue.join()
