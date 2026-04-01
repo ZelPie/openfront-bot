@@ -15,6 +15,28 @@ class LoadPlayers(commands.Cog):
         if not hasattr(self.bot, 'is_swarm_active'):
             self.bot.is_swarm_active = False
 
+        # --- Cancellation State ---
+        self.cancel_event = asyncio.Event()
+        self.current_queue = None
+
+    @app_commands.command(name="cancel_load", description="Cancels the currently running background load and saves progress.")
+    async def cancel_load(self, interaction: discord.Interaction):
+        if not getattr(self.bot, 'is_swarm_active', False):
+            await interaction.response.send_message("There is no background load currently running.", ephemeral=True)
+            return
+
+        self.cancel_event.set()
+        await interaction.response.send_message("**Cancellation requested!** The bot will finish its current active games, save progress, and stop.")
+
+        # Instantly empty the queue so workers stop grabbing new games
+        if self.current_queue:
+            while not self.current_queue.empty():
+                try:
+                    self.current_queue.get_nowait()
+                    self.current_queue.task_done()
+                except asyncio.QueueEmpty:
+                    break
+
     @app_commands.command(name="load_players", description="Persistent backfill that continuously retries games until their data loads.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., UN)")
     async def load_players(self, interaction: discord.Interaction, clan_tag: str):
@@ -33,6 +55,10 @@ class LoadPlayers(commands.Cog):
         self.bot.loop.create_task(self.background_loader(tag_upper, interaction.channel))
 
     async def background_loader(self, tag_upper, channel):
+        # Reset cancellation state for the new load
+        self.cancel_event.clear()
+        self.current_queue = None
+        
         base_url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions"
 
         # --- DATA INITIALIZATION ---
@@ -41,7 +67,6 @@ class LoadPlayers(commands.Cog):
         elif "total_games" not in self.bot.player_data[tag_upper]:
             self.bot.player_data[tag_upper]["total_games"] = 0
             
-        # Initialize persistent timer
         if "load_time_seconds" not in self.bot.player_data[tag_upper]:
             self.bot.player_data[tag_upper]["load_time_seconds"] = 0
             
@@ -60,6 +85,11 @@ class LoadPlayers(commands.Cog):
 
                 # --- 1. GATHER ALL UNPROCESSED GAMES ---
                 while True:
+                    # Break out early if the user cancelled during the paging phase
+                    if self.cancel_event.is_set():
+                        await channel.send(f"Scan for **[{tag_upper}]** cancelled by user during the paging phase. Aborting.")
+                        return
+                        
                     page_url = f"{base_url}?end={current_end_iso}"
                     
                     async with session.get(page_url) as resp:
@@ -126,23 +156,22 @@ class LoadPlayers(commands.Cog):
                 new_players = [0]
 
                 # --- 2. SETUP THE QUEUE ---
-                queue = asyncio.Queue()
+                self.current_queue = asyncio.Queue()
                 for game in games_to_process:
-                    queue.put_nowait(game)
+                    self.current_queue.put_nowait(game)
 
                 # --- 3. QUEUE WORKER LOGIC ---
                 async def worker(wid):
                     while True:
                         try:
-                            # Block and wait for a game from the front of the line
-                            game = await queue.get()
+                            game = await self.current_queue.get()
                         except asyncio.CancelledError:
                             break
                             
                         gid = game.get("gameId") if isinstance(game, dict) else game
                         fallback_win = game.get("hasWon", False) if isinstance(game, dict) else False
                         
-                        await asyncio.sleep(1)  # Initial pacing delay before each attempt
+                        await asyncio.sleep(1)  
 
                         success = False
                         try:
@@ -153,12 +182,14 @@ class LoadPlayers(commands.Cog):
                                     
                                     # CHECK IF EMPTY: Re-queue if missing info or players
                                     if not g_data or not info or not info.get("players"):
-                                        print(f"[Worker {wid}] Game {gid} returned empty. Re-queueing to the back of the line...")
-                                        queue.put_nowait(game)
+                                        print(f"[Worker {wid}] Game {gid} returned empty. Re-queueing...")
+                                        # Only re-queue if we haven't been cancelled!
+                                        if not self.cancel_event.is_set():
+                                            self.current_queue.put_nowait(game)
                                     else:
                                         g_start = info.get("start")
                                         if g_start and int(g_start) >= one_hour_ago_ms:
-                                            success = True # Skip gracefully, tracking handles it
+                                            success = True 
                                         else:
                                             is_win = g_data.get("hasWon", fallback_win)
                                             players = info.get("players", [])
@@ -191,24 +222,24 @@ class LoadPlayers(commands.Cog):
                                             success = True
                                             
                                 elif g_resp.status == 429:
-                                    print(f"[Worker {wid}] 429 Rate Limit. Pausing for 10s...")
+                                    print(f"[Worker {wid}] 429 Rate Limit. Pausing for 5s...")
                                     await asyncio.sleep(5)
-                                    queue.put_nowait(game)
+                                    if not self.cancel_event.is_set():
+                                        self.current_queue.put_nowait(game)
                                 else:
                                     print(f"[Worker {wid}] API Error {g_resp.status} on {gid}. Re-queueing...")
-                                    queue.put_nowait(game)
+                                    if not self.cancel_event.is_set():
+                                        self.current_queue.put_nowait(game)
 
                         except Exception as e:
-                            # Network timeout or disconnect
-                            queue.put_nowait(game)
+                            if not self.cancel_event.is_set():
+                                self.current_queue.put_nowait(game)
                             
-                        # Mark this specific attempt as done so the queue can track overall progress
-                        queue.task_done()
+                        self.current_queue.task_done()
                         
                         if success and processed_count[0] % 50 == 0 and processed_count[0] > 0:
                             print(f"[{tag_upper}] Backfill progress: {processed_count[0]} / {total_to_do}...")
                             
-                        # Crucial Pacing: 0.9 seconds per worker prevents 429s entirely
                         await asyncio.sleep(0.9)
 
                 # Auto-saver task
@@ -218,18 +249,18 @@ class LoadPlayers(commands.Cog):
                             await asyncio.sleep(60)
                             async with self.bot.save_lock:
                                 self.bot.save_data()
-                            print(f"[{tag_upper}] Progress saved. (Games remaining in queue: {queue.qsize()})")
+                            print(f"[{tag_upper}] Progress saved. (Games remaining in queue: {self.current_queue.qsize()})")
                     except asyncio.CancelledError:
                         pass
 
-                # Start the saver, timer, and exactly 3 concurrent workers
+                # Start tasks
                 saver_task = asyncio.create_task(auto_saver())
                 workers_list = [asyncio.create_task(worker(i)) for i in range(3)]
                 
-                # Wait until the queue is completely empty
-                await queue.join()
+                # Wait until the queue is completely empty (or emptied by the cancel command)
+                await self.current_queue.join()
                 
-                # Cleanup background tasks once everything is processed
+                # Cleanup tasks
                 saver_task.cancel()
                 timer_task.cancel()
                 for w in workers_list:
@@ -244,11 +275,21 @@ class LoadPlayers(commands.Cog):
                 async with self.bot.save_lock:
                     self.bot.save_data()
                 
-                await channel.send(
-                    f"**[{tag_upper}]** Background load complete! Every game was successfully found and processed.\n"
-                    f"Added **{processed_count[0]}** games and **{new_players[0]}** new players.\n"
-                    f"⏱ **Total Time Taken:** `{formatted_time}`"
-                )
+                if self.cancel_event.is_set():
+                    await channel.send(
+                        f"**[{tag_upper}]** Background load CANCELLED!\n"
+                        f"Saved **{processed_count[0]}** new games and **{new_players[0]}** new players.\n"
+                        f"⏱ **Time Spent:** `{formatted_time}`"
+                    )
+
+                    print(f"[{tag_upper}] BACKGROUND LOAD CANCELLED by user. Saved {processed_count[0]} games and {new_players[0]} new players. Time spent: {formatted_time}")
+                else:
+                    await channel.send(
+                        f"**[{tag_upper}]** Background load complete! Every game was successfully found and processed.\n"
+                        f"Added **{processed_count[0]}** games and **{new_players[0]}** new players.\n"
+                        f"⏱ **Total Time Taken:** `{formatted_time}`"
+                    )
+                    print(f"[{tag_upper}] BACKGROUND LOAD COMPLETE! Added {processed_count[0]} games and {new_players[0]} new players. Total time: {formatted_time}")
 
         except Exception as e:
             await channel.send(f"An error occurred during backfill: {e}")
