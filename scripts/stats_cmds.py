@@ -43,6 +43,7 @@ class StatsCmds(commands.Cog):
     async def player_info(self, interaction: discord.Interaction, clan_tag: str, username: str):
         tag_upper = clan_tag.upper()
         search_name = username.lower()
+        search_name = "[" + tag_upper + "]" + " " + search_name if not search_name.startswith(tag_upper.lower()) else search_name
         
         if tag_upper not in self.bot.player_data:
             await interaction.response.send_message(f"We don't have any tracked data for clan **[{tag_upper}]** yet.", ephemeral=True)
@@ -51,13 +52,11 @@ class StatsCmds(commands.Cog):
         clan_db = self.bot.player_data[tag_upper]
         found_player_id = None
         
-        for p_id, stats in clan_db.get("players", {}).items():
-            known_lower = [name.lower() for name in stats.get("known_names", [])]
-            if search_name in known_lower or search_name == p_id:
-                found_player_id = p_id
-                break
-                
-        if not found_player_id:
+        if search_name in clan_db.get("players", {}):
+            p_stats = clan_db["players"][search_name]
+            found_player_id = search_name
+            username = (found_player_id).strip("[" + tag_upper + "]").strip() if found_player_id.startswith("[" + tag_upper + "]") else found_player_id
+        else:
             await interaction.response.send_message(f"Could not find any tracked games for player **{username}** in clan **[{tag_upper}]**.", ephemeral=True)
             return
             
@@ -69,13 +68,11 @@ class StatsCmds(commands.Cog):
         
         winrate = (wins / games_played) * 100 if games_played > 0 else 0.0
         participation = (games_played / total_clan_games) * 100 if total_clan_games > 0 else 0.0
-        aliases = ", ".join([f"`{n}`" for n in p_stats.get("known_names", [])])
         
-        embed = discord.Embed(title=f"👤 Player Stats: {username} [{tag_upper}]", color=discord.Color.blue())
-        embed.add_field(name="Known Aliases", value=aliases, inline=False)
+        embed = discord.Embed(title=f"Player Stats: {username} [{tag_upper}]", color=discord.Color.blue())
         embed.add_field(name="Personal Win/Loss", value=f"**{wins}W** - **{losses}L**", inline=True)
         embed.add_field(name="Personal Win Rate", value=f"**{winrate:.1f}%**", inline=True)
-        embed.add_field(name="Clan Participation", value=f"Played in **{games_played}** tracked matches (**{participation:.1f}%** of clan activity)", inline=False)
+        embed.add_field(name="Clan Participation", value=f"Played in ``{games_played}`` / ``{total_clan_games}`` tracked matches (``{participation:.1f}%`` of clan activity)", inline=False)
         
         await interaction.response.send_message(embed=embed)
 
@@ -87,8 +84,6 @@ class StatsCmds(commands.Cog):
         app_commands.Choice(name='Weighted Wins', value="weighted_wins"),
     ])
     async def show_leaderboard(self, interaction: discord.Interaction, sort_by: app_commands.Choice[str] = None, num: int = 10, lower_num: int = 1):
-        await interaction.response.defer()
-
         if num < 1 or num > 25:
             num = 10
 
