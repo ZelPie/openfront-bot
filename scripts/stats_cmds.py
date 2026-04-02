@@ -84,6 +84,8 @@ class StatsCmds(commands.Cog):
         app_commands.Choice(name='Weighted Wins', value="weighted_wins"),
     ])
     async def show_leaderboard(self, interaction: discord.Interaction, sort_by: app_commands.Choice[str] = None, num: int = 10, lower_num: int = 1):
+        await interaction.response.defer()
+        
         if num < 1 or num > 25:
             num = 10
 
