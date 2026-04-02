@@ -6,6 +6,7 @@ class TrackingCmds(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    # Command allows the user to start tracking a clan's new matches in a specific channel, with an option to track losses as well
     @app_commands.command(name="track", description="Set up advanced match tracking for a clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", channel="The channel to post updates in", track_losses="Post match losses? (Default: False)")
     async def track_clan(self, interaction: discord.Interaction, clan_tag: str, channel: discord.TextChannel, track_losses: bool = False):
@@ -39,6 +40,7 @@ class TrackingCmds(commands.Cog):
         loss_text = "and losses" if track_losses else "(wins only)"
         await interaction.response.send_message(f"Now tracking matches {loss_text} for **[{tag_upper}]** in {channel.mention}!")
 
+    # Command allows users to stop the tracking of a clan in a specific channel
     @app_commands.command(name="untrack", description="Stop tracking a clan in a specific channel.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", channel="The channel to stop posting updates in")
     async def untrack_clan(self, interaction: discord.Interaction, clan_tag: str, channel: discord.TextChannel):
@@ -63,6 +65,5 @@ class TrackingCmds(commands.Cog):
         else:
             await interaction.response.send_message(f"Could not find an active tracker for **[{tag_upper}]** in {channel.mention}.", ephemeral=True)
 
-# This function tells main.py how to load this file
 async def setup(bot):
     await bot.add_cog(TrackingCmds(bot))

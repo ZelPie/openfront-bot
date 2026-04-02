@@ -83,7 +83,7 @@ class LoadPlayers(commands.Cog):
                 seen_game_ids = set()
                 consecutive_processed_count = 0
 
-                # --- 1. GATHER ALL UNPROCESSED GAMES ---
+                # GATHER ALL UNPROCESSED GAMES
                 while True:
                     # Break out early if the user cancelled during the paging phase
                     if self.cancel_event.is_set():
@@ -141,7 +141,7 @@ class LoadPlayers(commands.Cog):
                 await channel.send(f"Found **{total_to_do}** missing games for clan **[{tag_upper}]**. Starting persistent queue...")
                 print(f"[{tag_upper}] STARTING PERSISTENT QUEUE for {total_to_do} games for clan {tag_upper}...")
 
-                # --- PERSISTENT TIMER TASK ---
+                # PERSISTENT TIMER
                 async def timer():
                     try:
                         while True:
@@ -155,12 +155,12 @@ class LoadPlayers(commands.Cog):
                 processed_count = [0]
                 new_players = [0]
 
-                # --- 2. SETUP THE QUEUE ---
+                # SETUP QUEUE
                 self.current_queue = asyncio.Queue()
                 for game in games_to_process:
                     self.current_queue.put_nowait(game)
 
-                # --- 3. QUEUE WORKER LOGIC ---
+                # QUEUE WORKER LOGIC
                 async def worker(wid):
                     while True:
                         try:
@@ -242,7 +242,7 @@ class LoadPlayers(commands.Cog):
                             
                         await asyncio.sleep(0.9)
 
-                # Auto-saver task
+                # Auto saver task
                 async def auto_saver():
                     try:
                         while True:
@@ -266,7 +266,7 @@ class LoadPlayers(commands.Cog):
                 for w in workers_list:
                     w.cancel()
                 
-                # --- 4. FORMAT FINAL TIME & SAVE ---
+                # FORMAT FINAL TIME & SAVE
                 total_secs = self.bot.player_data[tag_upper].get("load_time_seconds", 0)
                 m, s = divmod(total_secs, 60)
                 h, m = divmod(m, 60)

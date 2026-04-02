@@ -12,7 +12,7 @@ class BackgroundLoop(commands.Cog):
         if not hasattr(self.bot, 'save_lock'):
             self.bot.save_lock = asyncio.Lock()
         
-        # --- Live Tracking Queue System ---
+        # Live Tracking Queue System
         self.live_queue = asyncio.Queue()
         self.queued_games = set() # Keeps track of what's already in line
         self.match_details_cache = {}
@@ -158,7 +158,7 @@ class BackgroundLoop(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"An error occurred during test: {e}")
 
-    # --- THE SCOUT ---
+    # BACKGROUND LOOP CODE
     # Scans the surface API every 30 seconds and adds missing games to the queue
     @tasks.loop(seconds=30) 
     async def check_clan_stats(self):
@@ -214,7 +214,7 @@ class BackgroundLoop(commands.Cog):
                     if not is_initial_scan:
                         print(f"Queued {len(new_sessions)} new games for clan [{clan_tag}].")
 
-    # --- THE WORKER ---
+    # LIVE WORKER CODE
     # Continuously grabs games from the queue. If they are empty/loading, puts them back in line.
     async def live_worker(self):
         await self.bot.wait_until_ready()
