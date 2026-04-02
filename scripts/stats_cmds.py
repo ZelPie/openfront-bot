@@ -43,7 +43,6 @@ class StatsCmds(commands.Cog):
     async def player_info(self, interaction: discord.Interaction, clan_tag: str, username: str):
         tag_upper = clan_tag.upper()
         search_name = username.lower()
-        search_name = "[" + tag_upper + "]" + " " + search_name if not search_name.startswith(tag_upper.lower()) else search_name
         
         if tag_upper not in self.bot.player_data:
             await interaction.response.send_message(f"We don't have any tracked data for clan **[{tag_upper}]** yet.", ephemeral=True)
@@ -51,29 +50,51 @@ class StatsCmds(commands.Cog):
             
         clan_db = self.bot.player_data[tag_upper]
         found_player_id = None
+
+        players = clan_db.get("players", {})
+        player_list = []
+
+        for player in players.keys():
+            if search_name == player.strip('[' + tag_upper + ']').strip().lower():
+                player_list.append(player)
+                found_player_id = player
         
-        if search_name in clan_db.get("players", {}):
-            p_stats = clan_db["players"][search_name]
-            found_player_id = search_name
-            username = (found_player_id).strip("[" + tag_upper + "]").strip() if found_player_id.startswith("[" + tag_upper + "]") else found_player_id
-        else:
-            await interaction.response.send_message(f"Could not find any tracked games for player **{username}** in clan **[{tag_upper}]**.", ephemeral=True)
+        if not found_player_id:
+            await interaction.response.send_message(f"Could not find any tracked games for player **{username}** in clan **[{tag_upper}]**.")
             return
+        
+        multiple = False
+        current_p_num = 0
+
+        if player_list and len(player_list) > 1:
+            embed = discord.Embed(title=f"Multiple players found matching '{username}' in [{tag_upper}]", description="Here are all the players we found that match that name:", color=discord.Color.blue())
+            multiple = True
+
+            # might not use below
+            # embed.add_field(name="Player List", value="\n".join(player_list), inline=False)
+        else:
+            embed = discord.Embed(title=f"Player Stats: {found_player_id}", color=discord.Color.blue())
+
+        for p in player_list:
+            current_p_num += 1
+            stats = players[p]
+            games_played = stats.get("games_played", 0)
+            wins = stats.get("wins", 0)
+            losses = games_played - wins
+            total_clan_games = clan_db.get("total_games", 0)
             
-        p_stats = clan_db["players"][found_player_id]
-        games_played = p_stats["games_played"]
-        wins = p_stats["wins"]
-        losses = games_played - wins
-        total_clan_games = clan_db.get("total_games", 0)
-        
-        winrate = (wins / games_played) * 100 if games_played > 0 else 0.0
-        participation = (games_played / total_clan_games) * 100 if total_clan_games > 0 else 0.0
-        
-        embed = discord.Embed(title=f"Player Stats: {username} [{tag_upper}]", color=discord.Color.blue())
-        embed.add_field(name="Personal Win/Loss", value=f"**{wins}W** - **{losses}L**", inline=True)
-        embed.add_field(name="Personal Win Rate", value=f"**{winrate:.1f}%**", inline=True)
-        embed.add_field(name="Clan Participation", value=f"Played in ``{games_played}`` / ``{total_clan_games}`` tracked matches (``{participation:.1f}%`` of clan activity)", inline=False)
-        
+            winrate = (wins / games_played) * 100 if games_played > 0 else 0.0
+            participation = (games_played / total_clan_games) * 100 if total_clan_games > 0 else 0.0
+            
+            embed.add_field(name="Player Name", value=f"**{p}**", inline=False)
+
+            embed.add_field(name="Personal Win/Loss", value=f"**{wins}W** - **{losses}L**", inline=True)
+            embed.add_field(name="Personal Win Rate", value=f"**{winrate:.1f}%**", inline=True)
+            embed.add_field(name="Clan Participation", value=f"Played in ``{games_played}`` / ``{total_clan_games}`` tracked matches (``{participation:.1f}%`` of clan activity)", inline=False)
+            
+            if multiple and current_p_num < len(player_list):
+                embed.add_field(name="", value="----------------------------------------------------------------", inline=False)
+            
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="leaderboard", description="Displays the top OpenFront clans.")
@@ -85,7 +106,7 @@ class StatsCmds(commands.Cog):
     ])
     async def show_leaderboard(self, interaction: discord.Interaction, sort_by: app_commands.Choice[str] = None, num: int = 10, lower_num: int = 1):
         await interaction.response.defer()
-        
+
         if num < 1 or num > 25:
             num = 10
 

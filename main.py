@@ -18,7 +18,7 @@ LEGACY_PROCESSED_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "pro
 os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
 os.makedirs(PROCESSED_GAMES_DIR, exist_ok=True)
 
-# Centralized Data Dictionaries
+# Centralized data dictionaries
 bot.server_data = {}
 bot.player_data = {}
 bot.processed_games = {} 
