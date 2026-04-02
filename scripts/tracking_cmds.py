@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+import re
 
 class TrackingCmds(commands.Cog):
     def __init__(self, bot):
@@ -9,10 +10,17 @@ class TrackingCmds(commands.Cog):
     # Command allows the user to start tracking a clan's new matches in a specific channel, with an option to track losses as well
     @app_commands.command(name="track", description="Set up advanced match tracking for a clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", channel="The channel to post updates in", track_losses="Post match losses? (Default: False)")
+    @app_commands.checks.has_permissions(manage_channels=True)  # Only allow server admins to set up tracking
     async def track_clan(self, interaction: discord.Interaction, clan_tag: str, channel: discord.TextChannel, track_losses: bool = False):
         guild_id = interaction.guild_id
         tag_upper = clan_tag.upper()
         server_name = interaction.guild.name
+
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+
+        if len(tag_upper) == 0 or len(tag_upper) > 5:
+            await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
+            return
         
         if guild_id not in self.bot.server_data:
             self.bot.server_data[guild_id] = {"server_name": server_name, "trackers": []}
@@ -43,9 +51,16 @@ class TrackingCmds(commands.Cog):
     # Command allows users to stop the tracking of a clan in a specific channel
     @app_commands.command(name="untrack", description="Stop tracking a clan in a specific channel.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", channel="The channel to stop posting updates in")
+    @app_commands.checks.has_permissions(manage_channels=True)  # Only allow server admins to remove tracking
     async def untrack_clan(self, interaction: discord.Interaction, clan_tag: str, channel: discord.TextChannel):
         guild_id = interaction.guild_id
         tag_upper = clan_tag.upper()
+
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+
+        if len(tag_upper) == 0 or len(tag_upper) > 5:
+            await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
+            return
 
         if guild_id not in self.bot.server_data or not self.bot.server_data[guild_id].get("trackers"):
             await interaction.response.send_message(f"This server isn't tracking any clans yet!", ephemeral=True)

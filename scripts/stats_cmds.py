@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import aiohttp
+import re
 
 class StatsCmds(commands.Cog):
     def __init__(self, bot):
@@ -10,9 +11,14 @@ class StatsCmds(commands.Cog):
     @app_commands.command(name="clan_info", description="Get overall statistics for a specific clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)")
     async def clan_info(self, interaction: discord.Interaction, clan_tag: str):
-        await interaction.response.defer()
         tag_upper = clan_tag.upper()
         url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}"
+
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+
+        if len(tag_upper) == 0 or len(tag_upper) > 5:
+            await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
+            return
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -43,6 +49,18 @@ class StatsCmds(commands.Cog):
     async def player_info(self, interaction: discord.Interaction, clan_tag: str, username: str):
         tag_upper = clan_tag.upper()
         search_name = username.lower()
+
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+
+        if len(tag_upper) == 0 or len(tag_upper) > 5:
+            await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
+            return
+        
+        search_name = re.sub(r'[^A-Za-z0-9_ ]', '', search_name)  # Sanitize input to prevent issues
+
+        if len(search_name) == 0 or len(search_name) > 25:
+            await interaction.response.send_message("Please provide a valid username (1-25 alphanumeric characters).", ephemeral=True)
+            return
         
         if tag_upper not in self.bot.player_data:
             await interaction.response.send_message(f"We don't have any tracked data for clan **[{tag_upper}]** yet.", ephemeral=True)
@@ -163,6 +181,12 @@ class StatsCmds(commands.Cog):
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", min_games="Minimum games played to be included in the list (Default: 5)")
     async def clan_players(self, interaction: discord.Interaction, clan_tag: str, min_games: int = 5):
         tag_upper = clan_tag.upper()
+
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+
+        if len(tag_upper) == 0 or len(tag_upper) > 5:
+            await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
+            return
         
         if tag_upper not in self.bot.player_data:
             await interaction.response.send_message(f"No tracked player data found for clan **[{tag_upper}]**.", ephemeral=True)
@@ -202,6 +226,12 @@ class StatsCmds(commands.Cog):
     async def outstanding_games(self, interaction: discord.Interaction, clan_tag: str):
         await interaction.response.defer()
         tag_upper = clan_tag.upper()
+
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+
+        if len(tag_upper) == 0 or len(tag_upper) > 5:
+            await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
+            return
         
         processed_games = len(self.bot.processed_games.get(tag_upper, []))
         

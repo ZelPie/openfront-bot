@@ -4,6 +4,13 @@ from discord import app_commands
 import aiohttp
 import asyncio
 from datetime import datetime, timedelta, timezone
+import re
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+dev_server_id = int(os.getenv('DEV_SERVER_ID', '0'))  # Default to 0 if not set
 
 class LoadPlayers(commands.Cog):
     def __init__(self, bot):
@@ -20,7 +27,12 @@ class LoadPlayers(commands.Cog):
         self.current_queue = None
 
     @app_commands.command(name="cancel_load", description="Cancels the currently running background load and saves progress.")
+    @app_commands.checks.has_permissions(administrator=True)  # Only allow server admins to cancel loads
     async def cancel_load(self, interaction: discord.Interaction):
+        if interaction.guild_id != dev_server_id:
+            await interaction.response.send_message("This command is currently restricted to the developer's server for performance reasons.", ephemeral=True)
+            return
+
         if not getattr(self.bot, 'is_swarm_active', False):
             await interaction.response.send_message("There is no background load currently running.", ephemeral=True)
             return
@@ -39,7 +51,12 @@ class LoadPlayers(commands.Cog):
 
     @app_commands.command(name="load_players", description="Persistent backfill that continuously retries games until their data loads.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., UN)")
+    @app_commands.checks.has_permissions(administrator=True)  # Only allow server admins to start loads
     async def load_players(self, interaction: discord.Interaction, clan_tag: str):
+        if interaction.guild_id != dev_server_id:
+            await interaction.response.send_message("This command is currently restricted to the developer's server for performance reasons.", ephemeral=True)
+            return
+
         if getattr(self.bot, 'is_swarm_active', False):
             await interaction.response.send_message(
                 "A background load is already running for another clan. Please wait for it to finish.", 
@@ -48,6 +65,11 @@ class LoadPlayers(commands.Cog):
             return
 
         tag_upper = clan_tag.upper()
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+
+        if len(tag_upper) == 0 or len(tag_upper) > 5:
+            await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
+            return
 
         await interaction.response.send_message(f"Paging backward through history for [{tag_upper}] to build the queue...")
         
