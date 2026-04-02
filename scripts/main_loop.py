@@ -171,7 +171,7 @@ class BackgroundLoop(commands.Cog):
         two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
         iso_timestamp = two_hours_ago.strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
-        print(f"Checking for new games for clans: {', '.join(unique_clans) if unique_clans else 'None'}")
+        print(f"Checking for new games for {len(unique_clans) if unique_clans else 'no'} clans. . .")
         
         async with aiohttp.ClientSession() as http_session:
             for clan_tag in unique_clans:
@@ -298,7 +298,7 @@ class BackgroundLoop(commands.Cog):
                                     self.bot.save_data()
                                 
                                 if not is_initial_scan:
-                                    print(f"Successfully processed & announced {session_id}. HasWon: {is_win}")
+                                    print(f"Successfully processed & announced {session_id}. Win: {is_win}")
 
                             elif game_resp.status == 429:
                                 print(f"429 Rate Limit. Re-queueing {session_id}...")
