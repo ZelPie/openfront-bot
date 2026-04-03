@@ -33,13 +33,17 @@ class StatsCmds(commands.Cog):
                         losses = games - wins
                         wl_ratio = data.get("weightedWLRatio", 0)
                         weighted_wins = data.get("weightedWins", 0)
+                        winstreak = self.bot.player_data.get(tag_upper, {}).get("winstreak", 0)
+                        highest_winstreak = self.bot.player_data.get(tag_upper, {}).get("highest_winstreak", 0)
                         
                         embed = discord.Embed(title=f"Clan [{tag_upper}] Statistics", color=discord.Color.blurple())
                         embed.add_field(name="Total Matches", value=f"**{games}**", inline=True)
                         embed.add_field(name="Wins / Losses", value=f"**{wins}** / **{losses}**", inline=True)
                         embed.add_field(name="Win/Loss Ratio", value=f"**{wl_ratio:.2f}**", inline=True)
-                        embed.add_field(name="Weighted Wins", value=f"**{weighted_wins}**", inline=False)
-                        
+                        # embed.add_field(name="", value="\u200b", inline=True)  # Empty field for spacing
+                        embed.add_field(name="Weighted Wins", value=f"**{weighted_wins}**", inline=True)
+                        embed.add_field(name="Winstreak", value=f"Current: **{winstreak}** | Highest: **{highest_winstreak}**", inline=True)
+
                         await interaction.followup.send(embed=embed)
                     else:
                         await interaction.followup.send(f"Could not find stats for **[{tag_upper}]**. (API returned status {response.status})")
@@ -102,6 +106,8 @@ class StatsCmds(commands.Cog):
             wins = stats.get("wins", 0)
             losses = games_played - wins
             total_clan_games = clan_db.get("total_games", 0)
+            winstreak = stats.get("winstreak", 0)
+            highest_winstreak = stats.get("highest_winstreak", 0)
             
             winrate = (wins / games_played) * 100 if games_played > 0 else 0.0
             participation = (games_played / total_clan_games) * 100 if total_clan_games > 0 else 0.0
@@ -110,6 +116,7 @@ class StatsCmds(commands.Cog):
 
             embed.add_field(name="Personal Win/Loss", value=f"**{wins}W** - **{losses}L**", inline=True)
             embed.add_field(name="Personal Win Rate", value=f"**{winrate:.1f}%**", inline=True)
+            embed.add_field(name="Personal Winstreak", value=f"Current: **{winstreak}** | Highest: **{highest_winstreak}**", inline=False)
             embed.add_field(name="Clan Participation", value=f"Played in ``{games_played}`` / ``{total_clan_games}`` tracked matches (``{participation:.1f}%`` of clan activity)", inline=False)
             
             if multiple and current_p_num < len(player_list):
