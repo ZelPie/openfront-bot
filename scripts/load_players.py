@@ -26,7 +26,7 @@ class LoadPlayers(commands.Cog):
         self.cancel_event = asyncio.Event()
         self.current_queue = None
 
-    @app_commands.command(name="cancel_load", description="Cancels the currently running background load and saves progress.")
+    @app_commands.command(name="cancel-load", description="Cancels the currently running background load and saves progress.")
     async def cancel_load(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("You don't have permission to cancel background loads. Only administrators can do this.", ephemeral=True)
@@ -52,7 +52,7 @@ class LoadPlayers(commands.Cog):
                 except asyncio.QueueEmpty:
                     break
 
-    @app_commands.command(name="load_players", description="Persistent backfill that continuously retries games until their data loads.")
+    @app_commands.command(name="load-clan-data", description="Persistent backfill that continuously retries games until clan and player data loads.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., UN)")
     async def load_players(self, interaction: discord.Interaction, clan_tag: str):
         if not interaction.user.guild_permissions.administrator:

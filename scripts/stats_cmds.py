@@ -8,7 +8,7 @@ class StatsCmds(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="clan_info", description="Get overall statistics for a specific clan.")
+    @app_commands.command(name="clan-stats", description="Get overall statistics for a specific clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)")
     async def clan_info(self, interaction: discord.Interaction, clan_tag: str):
         tag_upper = clan_tag.upper()
@@ -46,7 +46,7 @@ class StatsCmds(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"An error occurred while fetching clan info: {e}")
 
-    @app_commands.command(name="player_info", description="Get tracked internal statistics for a specific player.")
+    @app_commands.command(name="clan-player-stats", description="Get tracked internal statistics for a specific player.")
     @app_commands.describe(clan_tag="The clan they play for (e.g., CAF)", username="The player's username")
     async def player_info(self, interaction: discord.Interaction, clan_tag: str, username: str):
         tag_upper = clan_tag.upper()
@@ -179,7 +179,7 @@ class StatsCmds(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"An error occurred while loading the leaderboard: {e}")
 
-    @app_commands.command(name="clan_players", description="List all tracked players for a specific clan.")
+    @app_commands.command(name="clan-players", description="List all tracked players for a specific clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", min_games="Minimum games played to be included in the list (Default: 5)")
     async def clan_players(self, interaction: discord.Interaction, clan_tag: str, min_games: int = 5):
         tag_upper = clan_tag.upper()
@@ -223,7 +223,7 @@ class StatsCmds(commands.Cog):
         embed.description = description
         await interaction.response.send_message(embed=embed)
     
-    @app_commands.command(name="outstanding_games", description="Display the number of games that have not been processed for a specific clan.")
+    @app_commands.command(name="outstanding-games", description="Display the number of games that have not been processed for a specific clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)")
     async def outstanding_games(self, interaction: discord.Interaction, clan_tag: str):
         await interaction.response.defer()
