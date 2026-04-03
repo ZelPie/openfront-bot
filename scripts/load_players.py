@@ -27,8 +27,11 @@ class LoadPlayers(commands.Cog):
         self.current_queue = None
 
     @app_commands.command(name="cancel_load", description="Cancels the currently running background load and saves progress.")
-    @app_commands.checks.has_permissions(administrator=True)  # Only allow server admins to cancel loads
     async def cancel_load(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("You don't have permission to cancel background loads. Only administrators can do this.", ephemeral=True)
+            return
+
         if interaction.guild_id != dev_server_id:
             await interaction.response.send_message("This command is currently restricted to the developer's server for performance reasons.", ephemeral=True)
             return
@@ -51,8 +54,11 @@ class LoadPlayers(commands.Cog):
 
     @app_commands.command(name="load_players", description="Persistent backfill that continuously retries games until their data loads.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., UN)")
-    @app_commands.checks.has_permissions(administrator=True)  # Only allow server admins to start loads
     async def load_players(self, interaction: discord.Interaction, clan_tag: str):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("You don't have permission to start background loads. Only administrators can do this.", ephemeral=True)
+            return
+
         if interaction.guild_id != dev_server_id:
             await interaction.response.send_message("This command is currently restricted to the developer's server for performance reasons.", ephemeral=True)
             return

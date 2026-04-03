@@ -10,11 +10,14 @@ class TrackingCmds(commands.Cog):
     # Command allows the user to start tracking a clan's new matches in a specific channel, with an option to track losses as well
     @app_commands.command(name="track", description="Set up advanced match tracking for a clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", channel="The channel to post updates in", track_losses="Post match losses? (Default: False)")
-    @app_commands.checks.has_permissions(manage_channels=True)  # Only allow server admins to set up tracking
     async def track_clan(self, interaction: discord.Interaction, clan_tag: str, channel: discord.TextChannel, track_losses: bool = False):
         guild_id = interaction.guild_id
         tag_upper = clan_tag.upper()
         server_name = interaction.guild.name
+
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message("You don't have permission to manage channels, which is required to set up tracking.", ephemeral=True)
+            return
 
         tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
 
@@ -51,8 +54,11 @@ class TrackingCmds(commands.Cog):
     # Command allows users to stop the tracking of a clan in a specific channel
     @app_commands.command(name="untrack", description="Stop tracking a clan in a specific channel.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", channel="The channel to stop posting updates in")
-    @app_commands.checks.has_permissions(manage_channels=True)  # Only allow server admins to remove tracking
     async def untrack_clan(self, interaction: discord.Interaction, clan_tag: str, channel: discord.TextChannel):
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message("You don't have permission to manage channels, which is required to remove tracking.", ephemeral=True)
+            return
+
         guild_id = interaction.guild_id
         tag_upper = clan_tag.upper()
 

@@ -20,6 +20,8 @@ class StatsCmds(commands.Cog):
             await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
             return
         
+        await interaction.response.defer()  # Defer the response as we might take a moment to fetch data from the API
+        
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=10) as response:

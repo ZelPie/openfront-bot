@@ -136,6 +136,10 @@ class BackgroundLoop(commands.Cog):
     @app_commands.command(name="test", description="Test the embed output using the latest game from clan UN.")
     @app_commands.describe(clan_tag="The clan tag to test with (default: UN)")
     async def test_embed(self, interaction: discord.Interaction, clan_tag: str = "UN"):
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message("You don't have permission to manage channels, which is required to run tests.", ephemeral=True)
+            return
+
         await interaction.response.defer()
         api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions"
         try:
@@ -238,7 +242,7 @@ class BackgroundLoop(commands.Cog):
                                     if not is_initial_scan:
                                         print(f"Data for {session_id} is still empty. Re-queueing...")
                                     self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
-                                    await asyncio.sleep(0.5) 
+                                    await asyncio.sleep(0.3) 
                                     self.live_queue.task_done()
                                     continue # Skip the rest of the loop
                                     
@@ -303,7 +307,7 @@ class BackgroundLoop(commands.Cog):
                             elif game_resp.status == 429:
                                 print(f"429 Rate Limit. Re-queueing {session_id}...")
                                 self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
-                                await asyncio.sleep(5)
+                                await asyncio.sleep(1)
                             else:
                                 print(f"Error {game_resp.status}. Re-queueing {session_id}...")
                                 self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
@@ -313,11 +317,11 @@ class BackgroundLoop(commands.Cog):
                         self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
                         
                     self.live_queue.task_done()
-                    await asyncio.sleep(0.5) # Pace the live tracker so it doesn't fight the backfill
+                    await asyncio.sleep(0.3) # Pace the live tracker so it doesn't fight the backfill
                     
                 except Exception as e:
                     print(f"Live Queue Critical Error: {e}")
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(1)
 
     @check_clan_stats.before_loop
     async def before_check_clan_stats(self):
