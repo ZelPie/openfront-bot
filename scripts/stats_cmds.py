@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import aiohttp
 import re
+from .pages import LbDisplay
 
 class StatsCmds(commands.Cog):
     def __init__(self, bot):
@@ -125,20 +126,17 @@ class StatsCmds(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="leaderboard", description="Displays the top OpenFront clans.")
-    @app_commands.describe(sort_by="Choose how to rank the clans", num="How many clans to display (Default: 10, Max: 25)", lower_num="What place to start the list from (Default: 1)")
+    @app_commands.describe(sort_by="Choose how to rank the clans", num="How many clans to fetch (Default: 50)", lower_num="What place to start the list from (Default: 1)", reverse_sort="Whether to reverse the sort order (Default: False)")
     @app_commands.choices(sort_by=[
         app_commands.Choice(name="Highest Total Wins", value="wins"),
         app_commands.Choice(name="Highest Win/Loss Ratio", value="winrate"),
         app_commands.Choice(name='Weighted Wins', value="weighted_wins"),
     ])
-    async def show_leaderboard(self, interaction: discord.Interaction, sort_by: app_commands.Choice[str] = None, num: int = 10, lower_num: int = 1):
+    async def show_leaderboard(self, interaction: discord.Interaction, sort_by: app_commands.Choice[str] = None, num: int = 50, lower_num: int = 1, reverse_sort: bool = False):
         await interaction.response.defer()
 
-        if num < 1 or num > 25:
-            num = 10
-
-        if lower_num < 1:
-            lower_num = 1
+        if num < 1: num = 50
+        if lower_num < 1: lower_num = 1
         
         try:
             url = "https://api.openfront.io/public/clans/leaderboard"
@@ -149,54 +147,61 @@ class StatsCmds(commands.Cog):
                         clans_list = data.get("clans", [])
                         
                         sort_choice = sort_by.value if sort_by else "default"
-                        embed_title = f"🏆 Top {num} OpenFront Clans"
+                        embed_title = f"🏆 Top OpenFront Clans"
                         
                         if sort_choice == "wins":
-                            clans_list.sort(key=lambda c: c.get("wins", 0), reverse=True)
-                            embed_title = f"🏆 Top {num} Clans by Total Wins"
+                            clans_list.sort(key=lambda c: c.get("wins", 0), reverse=not reverse_sort)
+                            embed_title = f"🏆 Top Clans by Total Wins"
                         elif sort_choice == "winrate":
-                            clans_list.sort(key=lambda c: c.get("weightedWLRatio", 0), reverse=True)
-                            embed_title = f"🏆 Top {num} Clans by W/L Ratio"
+                            clans_list.sort(key=lambda c: c.get("weightedWLRatio", 0), reverse=not reverse_sort)
+                            embed_title = f"🏆 Top Clans by W/L Ratio"
                         elif sort_choice == "weighted_wins":
-                            clans_list.sort(key=lambda c: c.get("weightedWins", 0), reverse=True)
-                            embed_title = f"🏆 Top {num} Clans by Weighted Wins"
+                            clans_list.sort(key=lambda c: c.get("weightedWins", 0), reverse=not reverse_sort)
+                            embed_title = f"🏆 Top Clans by Weighted Wins"
 
-                        top_clans = clans_list[:num]
-                        embed = discord.Embed(title=embed_title, color=discord.Color.gold())
-                        
-                        leaderboard_text = ""
-                        for index, clan in enumerate(top_clans, start=lower_num):
+                        # Slice to the user's requested range
+                        top_clans = clans_list[lower_num - 1 : (lower_num - 1) + num]
+
+                        # 1. Define the formatting rule
+                        def format_clan(rank, clan):
                             tag = clan.get("clanTag", "UNK")
                             wins = clan.get("wins", 0)
                             weighted_wins = clan.get("weightedWins", 0)
                             games = clan.get("games", 0)
                             wl_ratio = clan.get("weightedWLRatio", 0)
                             
-                            wins_str = f"``{wins}``" if sort_choice == "wins" or sort_choice == "default" else f"{wins}"
+                            wins_str = f"``{wins}``" if sort_choice in ["wins", "default"] else f"{wins}"
                             wl_str = f"``{wl_ratio:.2f}``" if sort_choice == "winrate" else f"{wl_ratio:.2f}"
                             weighted_wins_str = f"``{weighted_wins}``" if sort_choice == "weighted_wins" else f"{weighted_wins}"
 
                             stat_string = f"Wins: {wins_str} (Weighted Wins: {weighted_wins_str}) \n Games: {games} \n W/L: {wl_str}"
-                            leaderboard_text += f"**{index}. [{tag}]** {stat_string}\n\n"
+                            return f"**#{rank}. [{tag}]**\n{stat_string}\n\n"
                             
-                        embed.description = leaderboard_text
-                        await interaction.followup.send(embed=embed)
+                        # 2. Create the Paginator
+                        view = LbDisplay(
+                            data=top_clans, 
+                            formatter_func=format_clan, 
+                            title=embed_title,
+                            items_per_page=5,
+                        )
+                        
+                        # 3. Send it!
+                        await interaction.followup.send(embed=view.format_page(), view=view)
                     else:
                         await interaction.followup.send(f"Failed to fetch leaderboard. Status Code: {response.status}")
         except Exception as e:
             await interaction.followup.send(f"An error occurred while loading the leaderboard: {e}")
 
     @app_commands.command(name="clan-players", description="List all tracked players for a specific clan.")
-    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", num="Number of top players to display (Default: 5)", min_games="Minimum games played to be included in the list (Default: 5)", sort_by="Choose how to sort the players", reverse_sort="Whether to reverse the sort order (Default: False)")
+    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", num="Number of top players to fetch (Default: 50)", min_games="Minimum games played to be included in the list (Default: 5)", sort_by="Choose how to sort the players", reverse_sort="Whether to reverse the sort order (Default: False)")
     @app_commands.choices(sort_by=[
         app_commands.Choice(name="Win Rate", value="winrate"),
         app_commands.Choice(name="Games Played", value="games"),
         app_commands.Choice(name='Total Wins', value="wins"),
     ])
-    async def clan_players(self, interaction: discord.Interaction, clan_tag: str, num: int = 5, min_games: int = 5, sort_by: str = "default", reverse_sort: bool = False):
+    async def clan_players(self, interaction: discord.Interaction, clan_tag: str, num: int = 50, min_games: int = 5, sort_by: str = "default", reverse_sort: bool = False):
         tag_upper = clan_tag.upper()
-
-        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper) 
 
         if len(tag_upper) == 0 or len(tag_upper) > 5:
             await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
@@ -210,49 +215,51 @@ class StatsCmds(commands.Cog):
         players = clan_db.get("players", {})
 
         if sort_by == "winrate" or sort_by == "default":
-            players = sorted(
+            sorted_players = sorted(
                 [x for x in players.items() if x[1].get("games_played", 0) >= min_games],
                 key=lambda x: ((x[1].get("wins", 0) / x[1].get("games_played", 0) if x[1].get("games_played", 0) > 0 else 0), x[1].get("games_played", 0)),
                 reverse = not reverse_sort
             )[:num]
         elif sort_by == "games":
-            players = sorted(
+            sorted_players = sorted(
                 [x for x in players.items() if x[1].get("games_played", 0) >= min_games],
                 key=lambda x: (x[1].get("games_played", 0), x[1].get("wins", 0)),
                 reverse = not reverse_sort
             )[:num]
         elif sort_by == "wins":
-            players = sorted(
+            sorted_players = sorted(
                 [x for x in players.items() if x[1].get("games_played", 0) >= min_games],
                 key=lambda x: (x[1].get("wins", 0), x[1].get("games_played", 0)),
                 reverse = not reverse_sort
             )[:num]
 
-        # Sort players by win rate, then by games played, and take the top 10 (or fewer if there aren't that many) if they have at least min_games games played to avoid skewing by players with very few matches
-        # top_players = sorted(
-        #     [x for x in players.items() if x[1].get("games_played", 0) >= min_games], 
-        #     key=lambda x: (x[1].get("wins", 0) / x[1].get("games_played", 0), x[1].get("games_played", 0)), 
-        #     reverse=True
-        # )[:num]
-        
-
-        if not players:
+        if not sorted_players:
             await interaction.response.send_message(f"No players are currently being tracked for clan **[{tag_upper}]**.", ephemeral=True)
             return
             
-        embed = discord.Embed(title=f"Tracked Players for [{tag_upper}] | Total Games: {clan_db.get('total_games', 0)}", color=discord.Color.green())
-        description = ""
-        
-        for p_id, stats in players:
+        total_clan_games = clan_db.get('total_games', 0)
+
+        # 1. Define the formatting rule
+        def format_player(rank, item):
+            p_id, stats = item
             games_played = stats.get("games_played", 0)
             wins = stats.get("wins", 0)
             losses = games_played - wins
             winrate = (wins / games_played) * 100 if games_played > 0 else 0.0
+            percent_of_clan = (games_played / total_clan_games * 100) if total_clan_games > 0 else 0
             
-            description += f"**{p_id}**\n- Games: {games_played}\n- Percent of Clan Games: {(games_played / clan_db.get('total_games', 0) * 100) if clan_db.get('total_games', 0) > 0 else 0:.1f}%\n- Win Rate: {winrate:.1f}%\n- W/L: {wins}/{losses}\n\n"
+            return f"**#{rank}. {p_id}**\n- Games: {games_played}\n- Percent of Clan Games: {percent_of_clan:.1f}%\n- Win Rate: {winrate:.1f}%\n- W/L: {wins}/{losses}\n\n"
+
+        # 2. Create the Paginator
+        view = LbDisplay(
+            data=sorted_players,
+            formatter_func=format_player,
+            title=f"Tracked Players for [{tag_upper}]",
+            items_per_page=5,
+        )
         
-        embed.description = description
-        await interaction.response.send_message(embed=embed)
+        # 3. Send it!
+        await interaction.response.send_message(embed=view.format_page(), view=view)
     
     @app_commands.command(name="outstanding-games", description="Display the number of games that have not been processed for a specific clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)")
