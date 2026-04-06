@@ -8,7 +8,7 @@ load_dotenv()
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-token = os.getenv('BOT_TOKEN')
+token = os.getenv('BOT_TOKEN', '')
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "tracking_data.json")
 PLAYER_DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data", "player_data.json")

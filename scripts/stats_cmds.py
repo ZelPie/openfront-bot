@@ -187,8 +187,13 @@ class StatsCmds(commands.Cog):
             await interaction.followup.send(f"An error occurred while loading the leaderboard: {e}")
 
     @app_commands.command(name="clan-players", description="List all tracked players for a specific clan.")
-    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", min_games="Minimum games played to be included in the list (Default: 5)")
-    async def clan_players(self, interaction: discord.Interaction, clan_tag: str, min_games: int = 5):
+    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", num="Number of top players to display (Default: 5)", min_games="Minimum games played to be included in the list (Default: 5)", sort_by="Choose how to sort the players", reverse_sort="Whether to reverse the sort order (Default: False)")
+    @app_commands.choices(sort_by=[
+        app_commands.Choice(name="Win Rate", value="winrate"),
+        app_commands.Choice(name="Games Played", value="games"),
+        app_commands.Choice(name='Total Wins', value="wins"),
+    ])
+    async def clan_players(self, interaction: discord.Interaction, clan_tag: str, num: int = 5, min_games: int = 5, sort_by: str = "default", reverse_sort: bool = False):
         tag_upper = clan_tag.upper()
 
         tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
@@ -204,12 +209,31 @@ class StatsCmds(commands.Cog):
         clan_db = self.bot.player_data[tag_upper]
         players = clan_db.get("players", {})
 
+        if sort_by == "winrate" or sort_by == "default":
+            players = sorted(
+                [x for x in players.items() if x[1].get("games_played", 0) >= min_games],
+                key=lambda x: ((x[1].get("wins", 0) / x[1].get("games_played", 0) if x[1].get("games_played", 0) > 0 else 0), x[1].get("games_played", 0)),
+                reverse = not reverse_sort
+            )[:num]
+        elif sort_by == "games":
+            players = sorted(
+                [x for x in players.items() if x[1].get("games_played", 0) >= min_games],
+                key=lambda x: (x[1].get("games_played", 0), x[1].get("wins", 0)),
+                reverse = not reverse_sort
+            )[:num]
+        elif sort_by == "wins":
+            players = sorted(
+                [x for x in players.items() if x[1].get("games_played", 0) >= min_games],
+                key=lambda x: (x[1].get("wins", 0), x[1].get("games_played", 0)),
+                reverse = not reverse_sort
+            )[:num]
+
         # Sort players by win rate, then by games played, and take the top 10 (or fewer if there aren't that many) if they have at least min_games games played to avoid skewing by players with very few matches
-        top_players = sorted(
-            [x for x in players.items() if x[1].get("games_played", 0) >= min_games], 
-            key=lambda x: (x[1].get("wins", 0) / x[1].get("games_played", 0), x[1].get("games_played", 0)), 
-            reverse=True
-        )[:10]
+        # top_players = sorted(
+        #     [x for x in players.items() if x[1].get("games_played", 0) >= min_games], 
+        #     key=lambda x: (x[1].get("wins", 0) / x[1].get("games_played", 0), x[1].get("games_played", 0)), 
+        #     reverse=True
+        # )[:num]
         
 
         if not players:
@@ -219,13 +243,13 @@ class StatsCmds(commands.Cog):
         embed = discord.Embed(title=f"Tracked Players for [{tag_upper}] | Total Games: {clan_db.get('total_games', 0)}", color=discord.Color.green())
         description = ""
         
-        for p_id, stats in top_players:
+        for p_id, stats in players:
             games_played = stats.get("games_played", 0)
             wins = stats.get("wins", 0)
             losses = games_played - wins
             winrate = (wins / games_played) * 100 if games_played > 0 else 0.0
             
-            description += f"**{p_id}** - Games: {games_played}, W/L: {wins}/{losses}, Win Rate: {winrate:.1f}%\n\n"
+            description += f"**{p_id}**\n- Games: {games_played}\n- Percent of Clan Games: {(games_played / clan_db.get('total_games', 0) * 100) if clan_db.get('total_games', 0) > 0 else 0:.1f}%\n- Win Rate: {winrate:.1f}%\n- W/L: {wins}/{losses}\n\n"
         
         embed.description = description
         await interaction.response.send_message(embed=embed)

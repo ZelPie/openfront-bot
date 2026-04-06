@@ -277,7 +277,6 @@ class LoadPlayers(commands.Cog):
                             await asyncio.sleep(60)
                             async with self.bot.save_lock:
                                 self.bot.save_data()
-                            print(f"[{tag_upper}] Progress saved. (Games remaining in queue: {self.current_queue.qsize()})")
                     except asyncio.CancelledError:
                         pass
 
