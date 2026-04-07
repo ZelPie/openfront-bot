@@ -126,16 +126,16 @@ class StatsCmds(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="leaderboard", description="Displays the top OpenFront clans.")
-    @app_commands.describe(sort_by="Choose how to rank the clans", num="How many clans to fetch (Default: 50)", lower_num="What place to start the list from (Default: 1)", reverse_sort="Whether to reverse the sort order (Default: False)")
+    @app_commands.describe(sort_by="Choose how to rank the clans", num="How many clans per page (Default: 5)", lower_num="What place to start the list from (Default: 1)", reverse_sort="Whether to reverse the sort order (Default: False)")
     @app_commands.choices(sort_by=[
         app_commands.Choice(name="Highest Total Wins", value="wins"),
         app_commands.Choice(name="Highest Win/Loss Ratio", value="winrate"),
         app_commands.Choice(name='Weighted Wins', value="weighted_wins"),
     ])
-    async def show_leaderboard(self, interaction: discord.Interaction, sort_by: app_commands.Choice[str] = None, num: int = 50, lower_num: int = 1, reverse_sort: bool = False):
+    async def show_leaderboard(self, interaction: discord.Interaction, sort_by: app_commands.Choice[str] = None, num: int = 5, lower_num: int = 1, reverse_sort: bool = False):
         await interaction.response.defer()
 
-        if num < 1: num = 50
+        if num < 1: num = 5
         if lower_num < 1: lower_num = 1
         
         try:
@@ -147,7 +147,7 @@ class StatsCmds(commands.Cog):
                         clans_list = data.get("clans", [])
                         
                         sort_choice = sort_by.value if sort_by else "default"
-                        embed_title = f"🏆 Top OpenFront Clans"
+                        embed_title = f"🏆 Top OpenFront Clans" # In case
                         
                         if sort_choice == "wins":
                             clans_list.sort(key=lambda c: c.get("wins", 0), reverse=not reverse_sort)
@@ -160,7 +160,7 @@ class StatsCmds(commands.Cog):
                             embed_title = f"🏆 Top Clans by Weighted Wins"
 
                         # Slice to the user's requested range
-                        top_clans = clans_list[lower_num - 1 : (lower_num - 1) + num]
+                        top_clans = clans_list[lower_num - 1:]
 
                         # 1. Define the formatting rule
                         def format_clan(rank, clan):
@@ -182,7 +182,7 @@ class StatsCmds(commands.Cog):
                             data=top_clans, 
                             formatter_func=format_clan, 
                             title=embed_title,
-                            items_per_page=5,
+                            items_per_page=num if num < 10 else 10,  # Show all on one page if 10 or fewer, otherwise paginate with 10 per page
                         )
                         
                         # 3. Send it!
