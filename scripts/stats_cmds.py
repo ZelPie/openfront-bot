@@ -155,7 +155,7 @@ class StatsCmds(commands.Cog):
                         elif sort_choice == "winrate":
                             clans_list.sort(key=lambda c: c.get("weightedWLRatio", 0), reverse=not reverse_sort)
                             embed_title = f"🏆 Top Clans by W/L Ratio"
-                        elif sort_choice == "weighted_wins":
+                        elif sort_choice == "weighted_wins" or sort_choice == "default":
                             clans_list.sort(key=lambda c: c.get("weightedWins", 0), reverse=not reverse_sort)
                             embed_title = f"🏆 Top Clans by Weighted Wins"
 
