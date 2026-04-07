@@ -332,7 +332,7 @@ class BackgroundLoop(commands.Cog):
                                     self.bot.save_data()
                                 
                                 if not is_initial_scan:
-                                    print(f"Successfully processed & announced {session_id}. Win: {is_win}. Current Winstreak: {self.bot.player_data[clan_tag]['winstreak']}. Highest Winstreak: {self.bot.player_data[clan_tag]['highest_winstreak']}.")
+                                    print(f"Successfully processed & announced {session_id} for clan [{clan_tag}]. Win: {is_win}. Current Winstreak: {self.bot.player_data[clan_tag]['winstreak']}. Highest Winstreak: {self.bot.player_data[clan_tag]['highest_winstreak']}.")
 
                             elif game_resp.status == 429:
                                 print(f"429 Rate Limit. Re-queueing {session_id}...")
