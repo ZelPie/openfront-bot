@@ -144,16 +144,20 @@ class BackgroundLoop(commands.Cog):
             return
 
         await interaction.response.defer()
-        api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions"
+        # Update URL for the new format
+        api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions?limit=1"
         try:
             async with aiohttp.ClientSession() as http_session:
                 async with http_session.get(api_url, timeout=10) as response:
                     if response.status == 200:
                         api_data = await response.json()
-                        sessions = list(api_data) if isinstance(api_data, list) else [api_data]
+                        # Extract the 'results' list
+                        sessions = api_data.get("results", [])
+                        
                         if not sessions or not sessions[0].get("gameId"):
                             await interaction.followup.send(f"Could not find any recent valid games for [{clan_tag}].")
                             return
+                            
                         latest_session = sessions[-1] 
                         embed = await self.create_match_embed(http_session, clan_tag, latest_session, track_losses=True)
                         if embed:
@@ -166,7 +170,6 @@ class BackgroundLoop(commands.Cog):
             await interaction.followup.send(f"An error occurred during test: {e}")
 
     # BACKGROUND LOOP CODE
-    # Scans the surface API every 30 seconds and adds missing games to the queue
     @tasks.loop(seconds=30) 
     async def check_clan_stats(self):
         unique_clans = set()
@@ -175,15 +178,14 @@ class BackgroundLoop(commands.Cog):
                 if tracker.get("clan_tag"):
                     unique_clans.add(tracker["clan_tag"])
         
-        two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
-        iso_timestamp = two_hours_ago.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        twelve_hours_ago = datetime.now(timezone.utc) - timedelta(hours=12)
+        iso_timestamp = twelve_hours_ago.strftime('%Y-%m-%dT%H:%M:%SZ')
 
         print(f"Checking for new games for {len(unique_clans) if unique_clans else 'no'} clans. . .")
         
         async with aiohttp.ClientSession() as http_session:
             for clan_tag in unique_clans:
-                api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions?start={iso_timestamp}"
-                
+                # Setup clan data (Keep your existing dict setups here)
                 if clan_tag not in self.bot.player_data:
                     self.bot.player_data[clan_tag] = {"total_games": 0, "winstreak": 0, "highest_winstreak": 0, "players": {}}
                 else:
@@ -199,25 +201,39 @@ class BackgroundLoop(commands.Cog):
                 if clan_tag not in self.bot.processed_games:
                     self.bot.processed_games[clan_tag] = []
 
-                # If the entire vault is empty, this is a fresh setup. Silently process.
                 is_initial_scan = len(self.bot.processed_games[clan_tag]) == 0
 
+                sessions = []
+                page = 1
                 try:
-                    async with http_session.get(api_url, timeout=10) as response:
-                        if response.status != 200:
-                            continue
-                        api_data = await response.json()
-                        sessions = list(api_data) if isinstance(api_data, list) else [api_data]
+                    # Loop through pages until empty
+                    while True:
+                        api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions?start={iso_timestamp}&page={page}&limit=50"
+                        async with http_session.get(api_url, timeout=10) as response:
+                            if response.status != 200:
+                                break
+                            
+                            api_data = await response.json()
+                            results = api_data.get("results", [])
+                            
+                            if not results: # Results empty, stop paging
+                                break
+                                
+                            sessions.extend(results)
+                            page += 1
                 except Exception as e:
                     print(f"Error fetching data for {clan_tag}: {e}")
                     continue
 
-                sessions.sort(key=lambda x: x.get("gameStart", ""))
-
-                if not sessions or not isinstance(sessions[0], dict) or not sessions[0].get("gameId"):
+                if not sessions:
                     continue
 
-                # Add unseen games to the queue
+                sessions.sort(key=lambda x: x.get("gameStart", ""))
+
+                if not isinstance(sessions[0], dict) or not sessions[0].get("gameId"):
+                    continue
+
+                # Add unseen games to the queue (Keep your existing queue logic here)
                 new_sessions = []
                 for session in sessions:
                     session_id = session.get("gameId")
@@ -284,7 +300,7 @@ class BackgroundLoop(commands.Cog):
                                         self.bot.player_data[clan_tag]["winstreak"] = 0
 
                                 # ANNOUNCE TO DISCORD (Skipped if this is the first scan)
-                                if not is_initial_scan:
+                                if not is_initial_scan and (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() < int(session.get("gameStart", 0)) / 1000: # Only announce games that started within the last hour during the initial scan to avoid spam
                                     for guild_id, data in list(self.bot.server_data.items()):
                                         for tracker in data.get("trackers", []):
                                             if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
@@ -332,7 +348,7 @@ class BackgroundLoop(commands.Cog):
                                     self.bot.save_data()
                                 
                                 if not is_initial_scan:
-                                    print(f"Successfully processed & announced {session_id} for clan [{clan_tag}]. Win: {is_win}. Current Winstreak: {self.bot.player_data[clan_tag]['winstreak']}. Highest Winstreak: {self.bot.player_data[clan_tag]['highest_winstreak']}.")
+                                    print(f"Successfully processed & announced {session_id} for clan [{clan_tag}]. Win: {is_win}. Current Winstreak: {self.bot.player_data[clan_tag]['winstreak']}. Games left in queue: {len(self.queued_games)}")
 
                             elif game_resp.status == 429:
                                 print(f"429 Rate Limit. Re-queueing {session_id}...")

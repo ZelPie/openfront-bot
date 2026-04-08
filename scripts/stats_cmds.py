@@ -4,6 +4,8 @@ from discord import app_commands
 import aiohttp
 import re
 from .pages import LbDisplay
+import asyncio
+from datetime import datetime, timedelta, timezone
 
 class StatsCmds(commands.Cog):
     def __init__(self, bot):
@@ -267,7 +269,7 @@ class StatsCmds(commands.Cog):
         await interaction.response.defer()
         tag_upper = clan_tag.upper()
 
-        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)
 
         if len(tag_upper) == 0 or len(tag_upper) > 5:
             await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
@@ -275,21 +277,153 @@ class StatsCmds(commands.Cog):
         
         processed_games = len(self.bot.processed_games.get(tag_upper, []))
         
-        url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}"
+        # Hit the sessions API to parse the "total" key attached to the games index
+        url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions?limit=1"
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=10) as response:
                     if response.status == 200:
                         dat = await response.json()
-                        total_games = dat.get("clan", {}).get("games", 0)
+                        # Extract total based on new dictionary structure
+                        total_games = int(dat.get("total", 0))
                         
-                        outstanding = max(0, total_games - processed_games)
+                        outstanding = total_games - processed_games
                         
                         await interaction.followup.send(f"**[{tag_upper}]** has **{outstanding}** outstanding games that have not been processed yet. (Total: {total_games}, Processed: {processed_games})")
                     else:
                         await interaction.followup.send(f"Could not fetch total games for **[{tag_upper}]** from the API.")
         except Exception as e:
             await interaction.followup.send(f"An error occurred while fetching clan info: {e}")
+
+    @app_commands.command(name="alltime-winstreak", description="Calculates the highest all-time winstreak for a clan by checking all their games.")
+    @app_commands.describe(clan_tag="The clan's tag (e.g., UN)")
+    async def alltime_winstreak(self, interaction: discord.Interaction, clan_tag: str):
+        await interaction.response.defer()
+        
+        tag_upper = clan_tag.upper()
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  
+
+        if len(tag_upper) == 0 or len(tag_upper) > 5:
+            await interaction.followup.send("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
+            return
+
+        all_games = []
+        seen_game_ids = set()
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                # 1. Fetch the absolute total so we know exactly when we've captured everything
+                total_games = 0
+                url_total = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions?limit=1"
+                async with session.get(url_total, timeout=10) as resp:
+                    if resp.status == 200:
+                        dat = await resp.json()
+                        total_games = int(dat.get("total", 0))
+
+                current_end = datetime.now(timezone.utc)
+                current_start = current_end - timedelta(days=1)
+                empty_days = 0
+                
+                # 2. Iterate backwards until we verify we hit the total game count
+                while True:
+                    start_iso = current_start.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    end_iso = current_end.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    
+                    page = 1
+                    day_results_count = 0
+                    
+                    while True:
+                        url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions?start={start_iso}&end={end_iso}&page={page}&limit=50"
+                        
+                        async with session.get(url, timeout=15) as response:
+                            # Robust check: if rate-limited, pause and retry like load_players
+                            if response.status == 429:
+                                print(f"[{tag_upper}] 429 Rate Limit hit. Pausing...")
+                                await asyncio.sleep(2)
+                                continue 
+                                
+                            if response.status != 200:
+                                break 
+                                
+                            data = await response.json()
+                            results = data.get("results", [])
+                            
+                            # Robust check: Make sure data structure is actually valid and present
+                            if not results or not isinstance(results, list) or len(results) == 0:
+                                break 
+                                
+                            for game in results:
+                                gid = game.get("gameId")
+                                if gid and gid not in seen_game_ids:
+                                    seen_game_ids.add(gid)
+                                    all_games.append(game)
+                                    day_results_count += 1
+                                    
+                            page += 1
+                            await asyncio.sleep(0.2) 
+                            
+                    # Safe exit trigger: We grabbed every game!
+                    if total_games > 0 and len(seen_game_ids) >= total_games:
+                        break
+
+                    if day_results_count == 0:
+                        empty_days += 1
+                        if empty_days >= 14: # End of history fallback
+                            break
+                    else:
+                        empty_days = 0
+                    
+                    print(f"Days without games: {empty_days}")
+                        
+                    current_end = current_start
+                    current_start = current_start - timedelta(days=1)
+                        
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred while fetching clan history: {e}")
+            return
+
+        if not all_games:
+            await interaction.followup.send(f"No games found for **[{tag_upper}]**.")
+            return
+
+        all_games.sort(key=lambda x: x.get("gameStart", ""))
+
+        current_streak = 0
+        highest_streak = 0
+
+        for game in all_games:
+            is_win = game.get("hasWon", False)
+            if is_win:
+                current_streak += 1
+                if current_streak > highest_streak:
+                    highest_streak = current_streak
+            else:
+                current_streak = 0
+
+        # Safely lock & save data
+        data_changed = False
+        if tag_upper in self.bot.player_data:
+            stored_highest = self.bot.player_data[tag_upper].get("highest_winstreak", 0)
+            if highest_streak > stored_highest:
+                self.bot.player_data[tag_upper]["highest_winstreak"] = highest_streak
+                data_changed = True
+        else:
+            self.bot.player_data[tag_upper] = {"total_games": len(all_games), "winstreak": current_streak, "highest_winstreak": highest_streak, "players": {}}
+            data_changed = True
+                
+        if data_changed and hasattr(self.bot, 'save_lock'):
+            async with self.bot.save_lock:
+                self.bot.save_data()
+
+        embed = discord.Embed(title=f"All-Time Winstreak for [{tag_upper}]", color=discord.Color.gold())
+        embed.add_field(name="Highest Winstreak", value=f"**{highest_streak}**", inline=False)
+        embed.add_field(name="Total Games Analyzed", value=f"``{len(all_games)}``", inline=False)
+        
+        if data_changed:
+            embed.set_footer(text="New highest winstreak saved to database!")
+        
+        await interaction.followup.send(embed=embed)
+
 
 async def setup(bot):
     await bot.add_cog(StatsCmds(bot))

@@ -89,7 +89,6 @@ class LoadPlayers(commands.Cog):
         
         base_url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions"
 
-        # --- DATA INITIALIZATION ---
         if tag_upper not in self.bot.player_data:
             self.bot.player_data[tag_upper] = {"total_games": 0, "players": {}}
         elif "total_games" not in self.bot.player_data[tag_upper]:
@@ -101,65 +100,79 @@ class LoadPlayers(commands.Cog):
         if tag_upper not in self.bot.processed_games:
             self.bot.processed_games[tag_upper] = []
 
+        # Start time logic: 1 hour ago down to 1 day ago
         one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
         one_hour_ago_ms = int(one_hour_ago.timestamp() * 1000)
-        current_end_iso = one_hour_ago.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+        
+        current_end = one_hour_ago
+        current_start = current_end - timedelta(days=1)
 
         try:
             async with aiohttp.ClientSession() as session:
                 games_to_process = []
                 seen_game_ids = set()
                 consecutive_processed_count = 0
+                empty_days = 0
 
                 # GATHER ALL UNPROCESSED GAMES
                 while True:
-                    # Break out early if the user cancelled during the paging phase
                     if self.cancel_event.is_set():
                         await channel.send(f"Scan for **[{tag_upper}]** cancelled by user during the paging phase. Aborting.")
                         return
-                        
-                    page_url = f"{base_url}?end={current_end_iso}"
                     
-                    async with session.get(page_url) as resp:
-                        if resp.status != 200:
-                            print(f"[{tag_upper}] API Error {resp.status} while paging.")
-                            break
-                            
-                        page_data = await resp.json()
+                    start_iso = current_start.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    end_iso = current_end.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    
+                    page = 1
+                    day_results_count = 0
+                    
+                    # Paging within the specific day chunk
+                    while True:
+                        page_url = f"{base_url}?start={start_iso}&end={end_iso}&page={page}&limit=50"
                         
-                        if not page_data or not isinstance(page_data, list) or len(page_data) == 0:
-                            break 
-                            
-                        oldest_ms_in_page = float('inf')
-                        
-                        for game in page_data:
-                            game_id = game.get("gameId")
-                            if not game_id or game_id in seen_game_ids:
-                                continue
-                            
-                            seen_game_ids.add(game_id)
-                            
-                            g_start = game.get("start")
-                            if g_start and g_start < oldest_ms_in_page:
-                                oldest_ms_in_page = g_start
+                        async with session.get(page_url) as resp:
+                            if resp.status != 200:
+                                print(f"[{tag_upper}] API Error {resp.status} while paging.")
+                                break
                                 
-                            if game_id in self.bot.processed_games[tag_upper]:
-                                consecutive_processed_count += 1
-                                continue
-                                    
-                            games_to_process.append(game)
-                            consecutive_processed_count = 0 
+                            page_data = await resp.json()
+                            results = page_data.get("results", [])
                             
-                        if consecutive_processed_count >= 2000:
-                            break
-                            
-                        if oldest_ms_in_page != float('inf'):
-                            next_dt = datetime.fromtimestamp((oldest_ms_in_page - 1) / 1000.0, tz=timezone.utc)
-                            current_end_iso = next_dt.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
-                        else:
-                            break
+                            if not results or not isinstance(results, list) or len(results) == 0:
+                                break 
+                                
+                            for game in results:
+                                game_id = game.get("gameId")
+                                if not game_id or game_id in seen_game_ids:
+                                    continue
+                                
+                                seen_game_ids.add(game_id)
+                                
+                                if game_id in self.bot.processed_games[tag_upper]:
+                                    consecutive_processed_count += 1
+                                    continue
+                                        
+                                games_to_process.append(game)
+                                consecutive_processed_count = 0 
+                                day_results_count += 1
+                                
+                            page += 1
+                            await asyncio.sleep(0.5) 
+
+                    if consecutive_processed_count >= 2000:
+                        break
                         
-                        await asyncio.sleep(0.5) 
+                    # Stop if we hit 3 completely dead days in a row (end of clan history)
+                    if day_results_count == 0:
+                        empty_days += 1
+                        if empty_days >= 3:
+                            break
+                    else:
+                        empty_days = 0
+                        
+                    # Shift to the previous day
+                    current_end = current_start
+                    current_start = current_start - timedelta(days=1)
 
                 total_to_do = len(games_to_process)
                 if total_to_do == 0:
@@ -270,7 +283,7 @@ class LoadPlayers(commands.Cog):
                             
                         await asyncio.sleep(0.9)
 
-                # Auto saver task
+                # Auto saver task in case
                 async def auto_saver():
                     try:
                         while True:

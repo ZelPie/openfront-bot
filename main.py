@@ -66,7 +66,7 @@ def load_data():
                     print(f"Error loading {filename}: {e}")
                     
     total_games = sum(len(games) for games in bot.processed_games.values())
-    print(f"Loaded {total_games} UNLIMITED processed games across {len(bot.processed_games)} clans.")
+    print(f"Loaded {total_games} processed games across {len(bot.processed_games)} clans.")
 
 def save_data():
     os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
