@@ -299,6 +299,8 @@ class StatsCmds(commands.Cog):
     @app_commands.describe(clan_tag="The clan's tag (e.g., UN)", username="Optional: Check a specific player's streak instead")
     async def alltime_winstreak(self, interaction: discord.Interaction, clan_tag: str, username: str = None):
         await interaction.response.defer()
+
+        print(f"Received request for all-time winstreak. Clan: {clan_tag}, Player: {username if username else 'N/A'}")
         
         tag_upper = clan_tag.upper()
         tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  
@@ -307,43 +309,12 @@ class StatsCmds(commands.Cog):
             await interaction.followup.send("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
             return
 
-        # PLAYER CHECK ROUTE (API)
-        if username:
-            if tag_upper not in self.bot.player_data:
-                await interaction.followup.send(f"No tracked data found for clan **[{tag_upper}]** yet. Please run a background load first.")
-                return
-                
-            clan_db = self.bot.player_data.get(tag_upper, {})
-            players = clan_db.get("players", {})
-            search_name = username.lower()
-            
-            found_player = None
-            for player in players.keys():
-                if search_name == player.strip('[' + tag_upper + ']').strip().lower():
-                    found_player = player
-                    break
-            
-            if found_player:
-                p_stats = players[found_player]
-                highest = p_stats.get("highest_winstreak", 0)
-                current = p_stats.get("winstreak", 0)
-                games = p_stats.get("games_played", 0)
-                
-                embed = discord.Embed(title=f"All-Time Winstreak for {found_player}", color=discord.Color.blue())
-                embed.add_field(name="Highest Winstreak", value=f"**{highest}**", inline=False)
-                embed.add_field(name="Current Winstreak", value=f"**{current}**", inline=False)
-                embed.add_field(name="Tracked Games", value=f"``{games}``", inline=False)
-                await interaction.followup.send(embed=embed)
-            else:
-                await interaction.followup.send(f"Player **{username}** not found in the processed database for **[{tag_upper}]**.")
-            return
-
-        # CLAN CHECK ROUTE (API)
         all_games = []
         seen_game_ids = set()
         
         try:
             async with aiohttp.ClientSession() as session:
+                # 1. Fetch the absolute total so we know exactly when we've captured everything
                 total_games = 0
                 url_total = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions?limit=1"
                 async with session.get(url_total, timeout=10) as resp:
@@ -355,6 +326,7 @@ class StatsCmds(commands.Cog):
                 current_start = current_end - timedelta(days=1)
                 empty_days = 0
                 
+                # 2. Iterate backwards to collect ALL games for the clan
                 while True:
                     start_iso = current_start.strftime('%Y-%m-%dT%H:%M:%SZ')
                     end_iso = current_end.strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -394,7 +366,7 @@ class StatsCmds(commands.Cog):
 
                     if day_results_count == 0:
                         empty_days += 1
-                        if empty_days >= 3: 
+                        if empty_days >= 14: 
                             break
                     else:
                         empty_days = 0
@@ -410,8 +382,97 @@ class StatsCmds(commands.Cog):
             await interaction.followup.send(f"No games found for **[{tag_upper}]**.")
             return
 
+        # Sort chronologically (oldest to newest)
         all_games.sort(key=lambda x: x.get("gameStart", ""))
 
+        # PLAYER SPECIFIC ROUTE
+        if username:
+            search_name = "[" + tag_upper + "] " + username.lower()
+            status_msg = await interaction.followup.send(f"Found **{len(all_games)}** total games for **[{tag_upper}]**.\n\nNow scanning every game chronologically to find matches for **{username}**...")
+            
+            p_highest_streak = 0
+            p_current_streak = 0
+            p_games_played = 0
+            exact_username = username # Will update to match their actual casing if found
+            
+            async with aiohttp.ClientSession() as session:
+                for game in all_games:
+                    gid = game.get("gameId")
+                    is_win = game.get("hasWon", False)
+                    
+                    # Fetch specific game details
+                    while True:
+                        try:
+                            game_url = f"https://api.openfront.io/public/game/{gid}?turns=false"
+                            async with session.get(game_url, timeout=10) as g_resp:
+                                if g_resp.status == 429:
+                                    await asyncio.sleep(2)
+                                    continue
+                                
+                                if g_resp.status == 200:
+                                    g_data = await g_resp.json()
+                                    info = g_data.get("info", {})
+                                    players = info.get("players", [])
+                                    
+                                    player_in_game = False
+                                    for p in players:
+                                        if p.get("clanTag", "").upper() == tag_upper and p.get("username", "").lower() == search_name:
+                                            player_in_game = True
+                                            exact_username = p.get("username")
+                                            break
+                                    
+                                    # Calculate logic in chronological order
+                                    if player_in_game:
+                                        p_games_played += 1
+                                        if is_win:
+                                            p_current_streak += 1
+                                            if p_current_streak > p_highest_streak:
+                                                p_highest_streak = p_current_streak
+                                        else:
+                                            p_current_streak = 0
+                                break
+                        except Exception:
+                            await asyncio.sleep(1) # Hiccup fallback
+                            continue
+                            
+                    await asyncio.sleep(0.15) # Protect against API rate-limits
+
+            if p_games_played == 0:
+                await status_msg.edit(content=f"Player **{username}** was not found in any of the {len(all_games)} games played by **[{tag_upper}]**.")
+                return
+                
+            # Update local database with the deep-scan results
+            data_changed = False
+            if tag_upper not in self.bot.player_data:
+                self.bot.player_data[tag_upper] = {"total_games": 0, "winstreak": 0, "highest_winstreak": 0, "players": {}}
+                
+            if exact_username not in self.bot.player_data[tag_upper]["players"]:
+                self.bot.player_data[tag_upper]["players"][exact_username] = {"games_played": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0}
+                
+            p_stats = self.bot.player_data[tag_upper]["players"][exact_username]
+            
+            if p_highest_streak > p_stats.get("highest_winstreak", 0):
+                p_stats["highest_winstreak"] = p_highest_streak
+                data_changed = True
+            
+            # Always sync their current streak & game count to ensure absolute accuracy
+            p_stats["winstreak"] = p_current_streak
+            p_stats["games_played"] = p_games_played
+            data_changed = True
+
+            if data_changed and hasattr(self.bot, 'save_lock'):
+                async with self.bot.save_lock:
+                    self.bot.save_data()
+
+            embed = discord.Embed(title=f"All-Time Winstreak for {exact_username} [{tag_upper}]", color=discord.Color.blue())
+            embed.add_field(name="Highest Winstreak", value=f"**{p_highest_streak}**", inline=False)
+            embed.add_field(name="Current Winstreak", value=f"**{p_current_streak}**", inline=False)
+            embed.add_field(name="Games Played", value=f"``{p_games_played}``", inline=False)
+            
+            await status_msg.edit(content=None, embed=embed)
+            return
+
+        # NORMAL CLAN ROUTE
         current_streak = 0
         highest_streak = 0
 
