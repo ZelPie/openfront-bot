@@ -49,7 +49,7 @@ class WinstreakCmds(commands.Cog):
                 except asyncio.QueueEmpty:
                     break
 
-    @app_commands.command(name="recheck-clan-data", description="Rescans all games to get all player data again. Use this if you think the winstreaks are wrong or if you want to update player stats after a long time.")
+    @app_commands.command(name="recheck-clan-data", description="Rescans all games to get all player data again. Use this if you think the winstreaks are wrong.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., UN)")
     async def recheck_winstreaks(self, interaction: discord.Interaction, clan_tag: str):
         if not interaction.user.guild_permissions.administrator:
@@ -336,8 +336,12 @@ class WinstreakCmds(commands.Cog):
         tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  
 
         if len(tag_upper) == 0 or len(tag_upper) > 5:
-            await interaction.followup.send("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
+            await interaction.channel.send("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
             return
+        
+        await interaction.followup.send(f"Initiating all-time winstreak scan for **[{tag_upper}]**.")
+
+        await interaction.channel.send(f"Scanning all games for **[{tag_upper}]** to calculate all-time winstreaks...")
 
         all_games = []
         seen_game_ids = set()
@@ -367,7 +371,7 @@ class WinstreakCmds(commands.Cog):
                         
                         async with session.get(url, timeout=15) as response:
                             if response.status == 429:
-                                await asyncio.sleep(2)
+                                await asyncio.sleep(1)
                                 continue 
                                 
                             if response.status != 200:
@@ -387,7 +391,7 @@ class WinstreakCmds(commands.Cog):
                                     day_results_count += 1
                                     
                             page += 1
-                            await asyncio.sleep(0.2) 
+                            await asyncio.sleep(0.1) 
                             
                     if total_games > 0 and len(seen_game_ids) >= total_games:
                         break
@@ -403,11 +407,11 @@ class WinstreakCmds(commands.Cog):
                     current_start = current_start - timedelta(days=1)
                         
         except Exception as e:
-            await interaction.followup.send(f"An error occurred while fetching clan history: {e}")
+            await interaction.channel.send(f"An error occurred while fetching clan history: {e}")
             return
 
         if not all_games:
-            await interaction.followup.send(f"No games found for **[{tag_upper}]**.")
+            await interaction.channel.send(f"No games found for **[{tag_upper}]**.")
             return
 
         all_games.sort(key=lambda x: x.get("gameStart", ""))
@@ -415,7 +419,7 @@ class WinstreakCmds(commands.Cog):
         # PLAYER SPECIFIC SCAN
         if username:
             search_name = username.strip().lower()
-            status_msg = await interaction.followup.send(f"Found **{len(all_games)}** total games for **[{tag_upper}]**.\n\nNow deep-scanning every game chronologically to find matches for **{username}**... *(This may take a few minutes due to API limits)*")
+            status_msg = await interaction.channel.send(f"Found **{len(all_games)}** total games for **[{tag_upper}]**.\n\nNow deep-scanning every game chronologically to find matches for **{username}**...")
             
             p_highest_streak = 0
             p_current_streak = 0
@@ -432,7 +436,7 @@ class WinstreakCmds(commands.Cog):
                             game_url = f"https://api.openfront.io/public/game/{gid}?turns=false"
                             async with session.get(game_url, timeout=10) as g_resp:
                                 if g_resp.status == 429:
-                                    await asyncio.sleep(2)
+                                    await asyncio.sleep(1)
                                     continue
                                 
                                 if g_resp.status == 200:
@@ -501,7 +505,7 @@ class WinstreakCmds(commands.Cog):
             embed.add_field(name="Current Winstreak", value=f"**{p_current_streak}**", inline=False)
             embed.add_field(name="Games Played", value=f"``{p_games_played}``", inline=False)
             
-            await status_msg.edit(content=None, embed=embed)
+            await interaction.channel.send(embed=embed)
             return
 
         # NORMAL CLAN ROUTE
@@ -537,8 +541,8 @@ class WinstreakCmds(commands.Cog):
         
         if data_changed:
             embed.set_footer(text="New highest winstreak saved to database!")
-        
-        await interaction.followup.send(embed=embed)
+
+        await interaction.channel.send(content=f"<@{interaction.user.id}>", embed=embed)
 
 
 async def setup(bot):
