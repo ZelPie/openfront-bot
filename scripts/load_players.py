@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import re
 from dotenv import load_dotenv
 import os
+from math import ceil, floor
 
 load_dotenv()
 
@@ -112,13 +113,27 @@ class LoadPlayers(commands.Cog):
                 games_to_process = []
                 seen_game_ids = set()
                 consecutive_processed_count = 0
-                empty_days = 0
+
+                async with session.get(f"{base_url}?limit=1") as resp:
+                    if resp.status != 200:
+                        await channel.send(f"Failed to access API for **[{tag_upper}]**. Status code: {resp.status}")
+                        self.bot.is_swarm_active = False
+                        return
+                    data = await resp.json()
+                    total_games = int(data.get("total", 0))
+                    print(f"[{tag_upper}] Total games according to API: {total_games}")
+
+                    cutoff_date = datetime(2025, 11, 10, tzinfo=timezone.utc)
+
 
                 # GATHER ALL UNPROCESSED GAMES
-                while True:
+                while True and total_games > 0 and len(seen_game_ids) + len(self.bot.processed_games[tag_upper]) < total_games:
                     if self.cancel_event.is_set():
                         await channel.send(f"Scan for **[{tag_upper}]** cancelled by user during the paging phase. Aborting.")
                         return
+                    
+                    if current_end < cutoff_date:
+                        break
                     
                     start_iso = current_start.strftime('%Y-%m-%dT%H:%M:%SZ')
                     end_iso = current_end.strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -127,52 +142,101 @@ class LoadPlayers(commands.Cog):
                     day_results_count = 0
                     
                     # Paging within the specific day chunk
-                    while True:
-                        page_url = f"{base_url}?start={start_iso}&end={end_iso}&page={page}&limit=50"
-                        
-                        async with session.get(page_url) as resp:
-                            if resp.status != 200:
-                                print(f"[{tag_upper}] API Error {resp.status} while paging.")
-                                break
-                                
-                            page_data = await resp.json()
-                            results = page_data.get("results", [])
+                    if total_games > 10000:
+
+                        chunks = ceil((total_games / 10000))
+
+                        day_chunk = floor((current_end - current_start) / chunks)
+
+                        print("over 10000)")
+                        while True:
+                            page_url = f"{base_url}?start={start_iso}&end={end_iso}&page={page}&limit=50"
                             
-                            if not results or not isinstance(results, list) or len(results) == 0:
-                                break 
+                            async with session.get(page_url) as resp:
+                                if resp.status != 200:
+                                    print(f"[{tag_upper}] API Error {resp.status} while paging.")
+                                    if resp.status == 429:
+                                        await asyncio.sleep(1)
+                                        continue
+                                    break
+                                    
+                                page_data = await resp.json()
+                                results = page_data.get("results", [])
                                 
-                            for game in results:
-                                game_id = game.get("gameId")
-                                if not game_id or game_id in seen_game_ids:
-                                    continue
+                                if not results or not isinstance(results, list) or len(results) == 0:
+                                    break 
+                                    
+                                for game in results:
+                                    game_id = game.get("gameId")
+                                    if not game_id or game_id in seen_game_ids:
+                                        continue
+                                    
+                                    seen_game_ids.add(game_id)
+                                    
+                                    if game_id in self.bot.processed_games[tag_upper]:
+                                        consecutive_processed_count += 1
+                                        continue
+                                            
+                                    games_to_process.append(game)
+                                    consecutive_processed_count = 0 
+                                    day_results_count += 1
+                                    
+                                    print(f"seen + processed: {len(seen_game_ids)} + {len(self.bot.processed_games[tag_upper])}")
+
+                                    if total_games > 0 and len(seen_game_ids) + len(self.bot.processed_games[tag_upper]) >= total_games:
+                                        break
+
+                                page += 1
+                                await asyncio.sleep(0.5) 
+                    else:
+                        print("under 10000")
+                        while True:
+                            async with session.get(f"{base_url}?page={page}&limit=50") as resp:
+                                if resp.status != 200:
+                                    print(f"[{tag_upper}] API Error {resp.status} while paging.")
+                                    if resp.status == 429:
+                                        await asyncio.sleep(1)
+                                        continue
+                                    break
+                                    
+                                page_data = await resp.json()
+                                results = page_data.get("results", [])
                                 
-                                seen_game_ids.add(game_id)
-                                
-                                if game_id in self.bot.processed_games[tag_upper]:
-                                    consecutive_processed_count += 1
-                                    continue
-                                        
-                                games_to_process.append(game)
-                                consecutive_processed_count = 0 
-                                day_results_count += 1
-                                
-                            page += 1
-                            await asyncio.sleep(0.5) 
+                                if not results or not isinstance(results, list) or len(results) == 0:
+                                    break 
+                                    
+                                for game in results:
+                                    game_id = game.get("gameId")
+                                    if not game_id or game_id in seen_game_ids:
+                                        continue
+                                    
+                                    seen_game_ids.add(game_id)
+                                    
+                                    if game_id in self.bot.processed_games[tag_upper]:
+                                        consecutive_processed_count += 1
+                                        continue
+                                            
+                                    games_to_process.append(game)
+                                    consecutive_processed_count = 0 
+                                    day_results_count += 1
+
+                                    print(f"seen + processed: {len(seen_game_ids)} + {len(self.bot.processed_games[tag_upper])}")
+
+                                    if total_games > 0 and len(seen_game_ids) + len(self.bot.processed_games[tag_upper]) >= total_games:
+                                        break
+
+                                page += 1
+                                await asyncio.sleep(0.5)
 
                     if consecutive_processed_count >= 2000:
                         break
-                        
-                    # Stop if we hit 3 completely dead days in a row (end of clan history)
-                    if day_results_count == 0:
-                        empty_days += 1
-                        if empty_days >= 3:
-                            break
-                    else:
-                        empty_days = 0
+                    
+                    if len(games_to_process) > 0 and len(seen_game_ids) >= len(games_to_process) + len(self.bot.processed_games[tag_upper]):
+                        break
                         
                     # Shift to the previous day
                     current_end = current_start
-                    current_start = current_start - timedelta(days=1)
+                    current_start = current_start - timedelta(days=day_chunk if total_games > 10000 else 1)
 
                 total_to_do = len(games_to_process)
                 if total_to_do == 0:

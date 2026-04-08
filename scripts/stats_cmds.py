@@ -195,7 +195,7 @@ class StatsCmds(commands.Cog):
             await interaction.followup.send(f"An error occurred while loading the leaderboard: {e}")
 
     @app_commands.command(name="clan-players", description="List all tracked players for a specific clan.")
-    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", num="Number of top players to fetch (Default: 50)", min_games="Minimum games played to be included in the list (Default: 5)", sort_by="Choose how to sort the players", reverse_sort="Whether to reverse the sort order (Default: False)")
+    @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", num="Number of players per page", min_games="Minimum games played to be included in the list (Default: 5)", sort_by="Choose how to sort the players", reverse_sort="Whether to reverse the sort order (Default: False)")
     @app_commands.choices(sort_by=[
         app_commands.Choice(name="Win Rate", value="winrate"),
         app_commands.Choice(name="Games Played", value="games"),
@@ -221,19 +221,23 @@ class StatsCmds(commands.Cog):
                 [x for x in players.items() if x[1].get("games_played", 0) >= min_games],
                 key=lambda x: ((x[1].get("wins", 0) / x[1].get("games_played", 0) if x[1].get("games_played", 0) > 0 else 0), x[1].get("games_played", 0)),
                 reverse = not reverse_sort
-            )[:num]
+            )
         elif sort_by == "games":
             sorted_players = sorted(
                 [x for x in players.items() if x[1].get("games_played", 0) >= min_games],
                 key=lambda x: (x[1].get("games_played", 0), x[1].get("wins", 0)),
                 reverse = not reverse_sort
-            )[:num]
+            )
         elif sort_by == "wins":
             sorted_players = sorted(
                 [x for x in players.items() if x[1].get("games_played", 0) >= min_games],
                 key=lambda x: (x[1].get("wins", 0), x[1].get("games_played", 0)),
                 reverse = not reverse_sort
-            )[:num]
+            )
+
+        for p in players:
+            print(p)
+        print(len(sorted_players))
 
         if not sorted_players:
             await interaction.response.send_message(f"No players are currently being tracked for clan **[{tag_upper}]**.", ephemeral=True)
@@ -257,7 +261,7 @@ class StatsCmds(commands.Cog):
             data=sorted_players,
             formatter_func=format_player,
             title=f"Tracked Players for [{tag_upper}]",
-            items_per_page=5,
+            items_per_page=num if num < 10 else 10,  # Show all on one page if 10 or fewer, otherwise paginate with 10 per page
         )
         
         # 3. Send it!

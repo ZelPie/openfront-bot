@@ -79,16 +79,20 @@ class WinstreakCmds(commands.Cog):
     async def background_recheck(self, tag_upper, channel):
         self.cancel_event.clear()
         self.current_queue = None
-        timer_task = None # Initialize variable for safety
+        timer_task = None 
         
         all_games = []
         seen_game_ids = set()
 
-        # FIXED: Proper dictionary initialization and access
         if tag_upper not in self.bot.player_data:
             self.bot.player_data[tag_upper] = {"total_games": 0, "winstreak": 0, "highest_winstreak": 0, "players": {}, "load_time_seconds": 0}
         if "load_time_seconds" not in self.bot.player_data[tag_upper]:
             self.bot.player_data[tag_upper]["load_time_seconds"] = 0
+            
+        if not hasattr(self.bot, 'processed_games'):
+            self.bot.processed_games = {}
+        if tag_upper not in self.bot.processed_games:
+            self.bot.processed_games[tag_upper] = []
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -99,9 +103,9 @@ class WinstreakCmds(commands.Cog):
                         dat = await resp.json()
                         total_games = int(dat.get("total", 0))
 
+                cutoff_date = datetime(2025, 11, 10, tzinfo=timezone.utc)
                 current_end = datetime.now(timezone.utc)
-                current_start = current_end - timedelta(days=1)
-                empty_days = 0
+                current_start = current_end - timedelta(days=3) # 3 Day block
                 
                 await channel.send(f"Paging backward to collect all `{total_games}` games...")
                 
@@ -109,6 +113,10 @@ class WinstreakCmds(commands.Cog):
                     if self.cancel_event.is_set():
                         await channel.send("Cancelled during paging.")
                         return
+
+                    # Stop if we hit Nov 10th 2025
+                    if current_end < cutoff_date:
+                        break
 
                     start_iso = current_start.strftime('%Y-%m-%dT%H:%M:%SZ')
                     end_iso = current_end.strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -135,21 +143,19 @@ class WinstreakCmds(commands.Cog):
                                     seen_game_ids.add(gid)
                                     all_games.append(game)
                                     day_results_count += 1
+                                    
+                                    # Add to processed games if missing
+                                    if gid not in self.bot.processed_games[tag_upper]:
+                                        self.bot.processed_games[tag_upper].append(gid)
+                                        
                             page += 1
                             await asyncio.sleep(0.2) 
                             
                     if total_games > 0 and len(seen_game_ids) >= total_games:
                         break
-
-                    if day_results_count == 0:
-                        empty_days += 1
-                        if empty_days >= 14: 
-                            break
-                    else:
-                        empty_days = 0
                         
                     current_end = current_start
-                    current_start = current_start - timedelta(days=1)
+                    current_start = current_start - timedelta(days=3)
 
                 if not all_games:
                     await channel.send(f"No games found for **[{tag_upper}]**.")
@@ -202,13 +208,12 @@ class WinstreakCmds(commands.Cog):
                                         downloaded_games[gid] = None
                                         break
                             except Exception:
-                                await asyncio.sleep(1)
+                                await asyncio.sleep(2)
                         self.current_queue.task_done()
                         await asyncio.sleep(0.5)
 
                 workers_list = [asyncio.create_task(worker(i)) for i in range(3)]
                 
-                # Perform the checks in a temporary dictionary to ensure it's safe if cancelled
                 temp_clan_winstreak = 0
                 temp_clan_highest = 0
                 temp_players = {}
@@ -245,13 +250,14 @@ class WinstreakCmds(commands.Cog):
                         for p in players:
                             if p.get("clanTag", "").upper() == tag_upper:
                                 api_name = p.get("username", "")
+                                clean_api_name = api_name.replace(f"[{tag_upper.upper()}]", "").replace(f"[{tag_upper.lower()}]", "").strip()
                                 
-                                if api_name.lower() in counted_here: continue
-                                counted_here.add(api_name.lower())
+                                if clean_api_name.lower() in counted_here: continue
+                                counted_here.add(clean_api_name.lower())
 
-                                db_username = api_name
+                                db_username = clean_api_name
                                 for existing_name in temp_players.keys():
-                                    if existing_name.lower() == api_name.lower():
+                                    if existing_name.lower() == clean_api_name.lower():
                                         db_username = existing_name
                                         break
 
@@ -278,7 +284,6 @@ class WinstreakCmds(commands.Cog):
                 for w in workers_list:
                     w.cancel()
                     
-                # FIXED: Cancel the timer task so it doesn't run forever!
                 if timer_task:
                     timer_task.cancel()
 
@@ -304,7 +309,6 @@ class WinstreakCmds(commands.Cog):
                     async with self.bot.save_lock:
                         self.bot.save_data()
 
-                    # Calculate string to display the formatted run-time
                     total_time = self.bot.player_data[tag_upper].get("load_time_seconds", 0)
                     m, s = divmod(total_time, 60)
                     h, m = divmod(m, 60)
@@ -315,18 +319,16 @@ class WinstreakCmds(commands.Cog):
                     else:
                         time_str = f"{s}s"
 
-                    await channel.send(f"**[{tag_upper}]** Winstreak recheck complete in **{time_str}**! Successfully re-evaluated and updated winstreaks for **{len(temp_players)}** players over **{processed_count}** games.")
+                    await channel.send(f"✅ **[{tag_upper}]** Winstreak recheck complete in **{time_str}**! Successfully re-evaluated and updated winstreaks for **{len(temp_players)}** players over **{processed_count}** games.")
                     print(f"[{tag_upper}] Winstreak recheck complete in {time_str}. Updated {len(temp_players)} players over {processed_count} games.")
 
         except Exception as e:
             await channel.send(f"An error occurred during recheck: {e}")
         finally:
             self.bot.is_swarm_active = False
-            # Safely catch any loose timers if the script hard-crashes
             if timer_task and not timer_task.done():
                 timer_task.cancel()
 
-    # Used for testing purposes to quickly scan a clan's history and get the all-time winstreak without waiting for the full recheck to complete. This is NOT used in the recheck process at all.
     @app_commands.command(name="alltime-winstreak", description="Calculates the highest all-time winstreak for a clan or a specific player.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., UN)", username="Optional: Check a specific player's streak instead")
     async def alltime_winstreak(self, interaction: discord.Interaction, clan_tag: str, username: str = None):
@@ -336,15 +338,18 @@ class WinstreakCmds(commands.Cog):
         tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  
 
         if len(tag_upper) == 0 or len(tag_upper) > 5:
-            await interaction.channel.send("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
+            await interaction.followup.send("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
             return
         
-        await interaction.followup.send(f"Initiating all-time winstreak scan for **[{tag_upper}]**.")
-
-        await interaction.channel.send(f"Scanning all games for **[{tag_upper}]** to calculate all-time winstreaks...")
+        await interaction.followup.send(f"Scanning all games for **[{tag_upper}]** to calculate all-time winstreaks...")
 
         all_games = []
         seen_game_ids = set()
+
+        if not hasattr(self.bot, 'processed_games'):
+            self.bot.processed_games = {}
+        if tag_upper not in self.bot.processed_games:
+            self.bot.processed_games[tag_upper] = []
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -355,11 +360,15 @@ class WinstreakCmds(commands.Cog):
                         dat = await resp.json()
                         total_games = int(dat.get("total", 0))
 
+                cutoff_date = datetime(2025, 11, 10, tzinfo=timezone.utc)
                 current_end = datetime.now(timezone.utc)
-                current_start = current_end - timedelta(days=1)
+                current_start = current_end - timedelta(days=3)
                 empty_days = 0
                 
                 while True:
+                    if current_end < cutoff_date:
+                        break
+
                     start_iso = current_start.strftime('%Y-%m-%dT%H:%M:%SZ')
                     end_iso = current_end.strftime('%Y-%m-%dT%H:%M:%SZ')
                     
@@ -390,28 +399,25 @@ class WinstreakCmds(commands.Cog):
                                     all_games.append(game)
                                     day_results_count += 1
                                     
+                                    # Append to processed games cache if it's missing
+                                    if gid not in self.bot.processed_games[tag_upper]:
+                                        self.bot.processed_games[tag_upper].append(gid)
+                                    
                             page += 1
                             await asyncio.sleep(0.1) 
                             
                     if total_games > 0 and len(seen_game_ids) >= total_games:
                         break
-
-                    if day_results_count == 0:
-                        empty_days += 1
-                        if empty_days >= 14: 
-                            break
-                    else:
-                        empty_days = 0
                         
                     current_end = current_start
-                    current_start = current_start - timedelta(days=1)
+                    current_start = current_start - timedelta(days=3)
                         
         except Exception as e:
-            await interaction.channel.send(f"An error occurred while fetching clan history: {e}")
+            await interaction.followup.send(f"An error occurred while fetching clan history: {e}")
             return
 
         if not all_games:
-            await interaction.channel.send(f"No games found for **[{tag_upper}]**.")
+            await interaction.followup.send(f"No games found for **[{tag_upper}]**.")
             return
 
         all_games.sort(key=lambda x: x.get("gameStart", ""))
@@ -419,7 +425,7 @@ class WinstreakCmds(commands.Cog):
         # PLAYER SPECIFIC SCAN
         if username:
             search_name = username.strip().lower()
-            status_msg = await interaction.channel.send(f"Found **{len(all_games)}** total games for **[{tag_upper}]**.\n\nNow deep-scanning every game chronologically to find matches for **{username}**...")
+            status_msg = await interaction.followup.send(f"Found **{len(all_games)}** total games for **[{tag_upper}]**.\n\nNow deep-scanning every game chronologically to find matches for **{username}**...")
             
             p_highest_streak = 0
             p_current_streak = 0
@@ -505,7 +511,7 @@ class WinstreakCmds(commands.Cog):
             embed.add_field(name="Current Winstreak", value=f"**{p_current_streak}**", inline=False)
             embed.add_field(name="Games Played", value=f"``{p_games_played}``", inline=False)
             
-            await interaction.channel.send(embed=embed)
+            await status_msg.edit(content=None, embed=embed)
             return
 
         # NORMAL CLAN ROUTE
@@ -542,7 +548,7 @@ class WinstreakCmds(commands.Cog):
         if data_changed:
             embed.set_footer(text="New highest winstreak saved to database!")
 
-        await interaction.channel.send(content=f"<@{interaction.user.id}>", embed=embed)
+        await interaction.followup.send(content=f"<@{interaction.user.id}>", embed=embed)
 
 
 async def setup(bot):
