@@ -295,9 +295,9 @@ class StatsCmds(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"An error occurred while fetching clan info: {e}")
 
-    @app_commands.command(name="alltime-winstreak", description="Calculates the highest all-time winstreak for a clan by checking all their games.")
-    @app_commands.describe(clan_tag="The clan's tag (e.g., UN)")
-    async def alltime_winstreak(self, interaction: discord.Interaction, clan_tag: str):
+    @app_commands.command(name="alltime-winstreak", description="Calculates the highest all-time winstreak for a clan or a specific player.")
+    @app_commands.describe(clan_tag="The clan's tag (e.g., UN)", username="Optional: Check a specific player's streak instead")
+    async def alltime_winstreak(self, interaction: discord.Interaction, clan_tag: str, username: str = None):
         await interaction.response.defer()
         
         tag_upper = clan_tag.upper()
@@ -307,12 +307,43 @@ class StatsCmds(commands.Cog):
             await interaction.followup.send("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
             return
 
+        # PLAYER CHECK ROUTE (API)
+        if username:
+            if tag_upper not in self.bot.player_data:
+                await interaction.followup.send(f"No tracked data found for clan **[{tag_upper}]** yet. Please run a background load first.")
+                return
+                
+            clan_db = self.bot.player_data.get(tag_upper, {})
+            players = clan_db.get("players", {})
+            search_name = username.lower()
+            
+            found_player = None
+            for player in players.keys():
+                if search_name == player.strip('[' + tag_upper + ']').strip().lower():
+                    found_player = player
+                    break
+            
+            if found_player:
+                p_stats = players[found_player]
+                highest = p_stats.get("highest_winstreak", 0)
+                current = p_stats.get("winstreak", 0)
+                games = p_stats.get("games_played", 0)
+                
+                embed = discord.Embed(title=f"All-Time Winstreak for {found_player}", color=discord.Color.blue())
+                embed.add_field(name="Highest Winstreak", value=f"**{highest}**", inline=False)
+                embed.add_field(name="Current Winstreak", value=f"**{current}**", inline=False)
+                embed.add_field(name="Tracked Games", value=f"``{games}``", inline=False)
+                await interaction.followup.send(embed=embed)
+            else:
+                await interaction.followup.send(f"Player **{username}** not found in the processed database for **[{tag_upper}]**.")
+            return
+
+        # CLAN CHECK ROUTE (API)
         all_games = []
         seen_game_ids = set()
         
         try:
             async with aiohttp.ClientSession() as session:
-                # 1. Fetch the absolute total so we know exactly when we've captured everything
                 total_games = 0
                 url_total = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions?limit=1"
                 async with session.get(url_total, timeout=10) as resp:
@@ -324,7 +355,6 @@ class StatsCmds(commands.Cog):
                 current_start = current_end - timedelta(days=1)
                 empty_days = 0
                 
-                # 2. Iterate backwards until we verify we hit the total game count
                 while True:
                     start_iso = current_start.strftime('%Y-%m-%dT%H:%M:%SZ')
                     end_iso = current_end.strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -336,9 +366,7 @@ class StatsCmds(commands.Cog):
                         url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions?start={start_iso}&end={end_iso}&page={page}&limit=50"
                         
                         async with session.get(url, timeout=15) as response:
-                            # Robust check: if rate-limited, pause and retry like load_players
                             if response.status == 429:
-                                print(f"[{tag_upper}] 429 Rate Limit hit. Pausing...")
                                 await asyncio.sleep(2)
                                 continue 
                                 
@@ -348,7 +376,6 @@ class StatsCmds(commands.Cog):
                             data = await response.json()
                             results = data.get("results", [])
                             
-                            # Robust check: Make sure data structure is actually valid and present
                             if not results or not isinstance(results, list) or len(results) == 0:
                                 break 
                                 
@@ -362,18 +389,15 @@ class StatsCmds(commands.Cog):
                             page += 1
                             await asyncio.sleep(0.2) 
                             
-                    # Safe exit trigger: We grabbed every game!
                     if total_games > 0 and len(seen_game_ids) >= total_games:
                         break
 
                     if day_results_count == 0:
                         empty_days += 1
-                        if empty_days >= 14: # End of history fallback
+                        if empty_days >= 3: 
                             break
                     else:
                         empty_days = 0
-                    
-                    print(f"Days without games: {empty_days}")
                         
                     current_end = current_start
                     current_start = current_start - timedelta(days=1)
@@ -400,7 +424,6 @@ class StatsCmds(commands.Cog):
             else:
                 current_streak = 0
 
-        # Safely lock & save data
         data_changed = False
         if tag_upper in self.bot.player_data:
             stored_highest = self.bot.player_data[tag_upper].get("highest_winstreak", 0)

@@ -185,7 +185,7 @@ class BackgroundLoop(commands.Cog):
         
         async with aiohttp.ClientSession() as http_session:
             for clan_tag in unique_clans:
-                # Setup clan data (Keep your existing dict setups here)
+                # Setup clan data
                 if clan_tag not in self.bot.player_data:
                     self.bot.player_data[clan_tag] = {"total_games": 0, "winstreak": 0, "highest_winstreak": 0, "players": {}}
                 else:
@@ -228,12 +228,12 @@ class BackgroundLoop(commands.Cog):
                 if not sessions:
                     continue
 
+                # Ensure oldest games are first!
                 sessions.sort(key=lambda x: x.get("gameStart", ""))
 
                 if not isinstance(sessions[0], dict) or not sessions[0].get("gameId"):
                     continue
 
-                # Add unseen games to the queue (Keep your existing queue logic here)
                 new_sessions = []
                 for session in sessions:
                     session_id = session.get("gameId")
@@ -241,7 +241,7 @@ class BackgroundLoop(commands.Cog):
                         new_sessions.append(session)
 
                 if new_sessions:
-                    new_sessions.reverse()
+                    # Feed into the queue strictly oldest-first
                     for session in new_sessions:
                         self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
                         self.queued_games.add(session.get("gameId"))
@@ -250,7 +250,6 @@ class BackgroundLoop(commands.Cog):
                         print(f"Queued {len(new_sessions)} new games for clan [{clan_tag}].")
 
     # LIVE WORKER CODE
-    # Continuously grabs games from the queue. If they are empty/loading, puts them back in line.
     async def live_worker(self):
         await self.bot.wait_until_ready()
         async with aiohttp.ClientSession() as http_session:
@@ -262,108 +261,113 @@ class BackgroundLoop(commands.Cog):
                     is_win = session.get("hasWon", False)
                     game_url = f"https://api.openfront.io/public/game/{session_id}?turns=false"
                     
-                    try:
-                        async with http_session.get(game_url, timeout=10) as game_resp:
-                            if game_resp.status == 200:
-                                game_data = await game_resp.json()
-                                info = game_data.get("info", {})
-                                
-                                # CHECK IF DATA IS READY YET. If not, re-queue!
-                                if not game_data or not info or not info.get("players"):
-                                    if not is_initial_scan:
-                                        print(f"Data for {session_id} is still empty. Re-queueing...")
-                                    self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
-                                    await asyncio.sleep(0.3) 
-                                    self.live_queue.task_done()
-                                    continue # Skip the rest of the loop
+                    # STUBBORN RETRY LOOP: Forces the worker to process this exact game before moving on
+                    while True:
+                        try:
+                            async with http_session.get(game_url, timeout=10) as game_resp:
+                                if game_resp.status == 200:
+                                    game_data = await game_resp.json()
+                                    info = game_data.get("info", {})
                                     
-                                all_players = info.get("players", [])
-                                self.match_details_cache[session_id] = {
-                                    "players": all_players,
-                                    "start": info.get("start"),
-                                    "end": info.get("end")
-                                }
+                                    # CHECK IF DATA IS READY YET.
+                                    if not game_data or not info or not info.get("players"):
+                                        if not is_initial_scan:
+                                            print(f"Data for {session_id} is still empty. Retrying in 2s...")
+                                        await asyncio.sleep(2) 
+                                        continue # Retry this same game
+                                        
+                                    all_players = info.get("players", [])
+                                    self.match_details_cache[session_id] = {
+                                        "players": all_players,
+                                        "start": info.get("start"),
+                                        "end": info.get("end")
+                                    }
 
-                                # UPDATE GLOBAL PLAYER STATS
-                                self.bot.player_data[clan_tag]["total_games"] += 1
-                                self.bot.processed_games[clan_tag].append(session_id)
+                                    # UPDATE GLOBAL PLAYER STATS
+                                    self.bot.player_data[clan_tag]["total_games"] += 1
+                                    self.bot.processed_games[clan_tag].append(session_id)
 
-                                if self.bot.player_data[clan_tag]["winstreak"] is None:
-                                    self.bot.player_data[clan_tag]["winstreak"] = 0
-                                    self.bot.player_data[clan_tag]["highest_winstreak"] = self.bot.player_data[clan_tag]["winstreak"]
-                                else:
-                                    if is_win:
-                                        self.bot.player_data[clan_tag]["winstreak"] += 1
-                                        if self.bot.player_data[clan_tag]["winstreak"] > self.bot.player_data[clan_tag]["highest_winstreak"]:
-                                            self.bot.player_data[clan_tag]["highest_winstreak"] = self.bot.player_data[clan_tag]["winstreak"]
-                                    else:
+                                    if self.bot.player_data[clan_tag]["winstreak"] is None:
                                         self.bot.player_data[clan_tag]["winstreak"] = 0
-
-                                # ANNOUNCE TO DISCORD (Skipped if this is the first scan)
-                                if not is_initial_scan and (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() < int(session.get("gameStart", 0)) / 1000: # Only announce games that started within the last hour during the initial scan to avoid spam
-                                    for guild_id, data in list(self.bot.server_data.items()):
-                                        for tracker in data.get("trackers", []):
-                                            if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
-                                                channel = self.bot.get_channel(tracker["channel_id"])
-                                                if channel:
-                                                    embed = await self.create_match_embed(
-                                                        http_session, clan_tag, session, 
-                                                        tracker.get("track_losses", False), 
-                                                        self.match_details_cache
-                                                    )
-                                                    if embed:
-                                                        await channel.send(embed=embed)
-
-                                already_counted_players = set()
-                                for p in all_players:
-                                    if p.get("clanTag", "").upper() == clan_tag.upper():
-                                        p_name = p.get("username", "Unknown")
-                                        if p_name in already_counted_players: continue
-
-                                        already_counted_players.add(p_name)
-                                        
-                                        if p_name not in self.bot.player_data[clan_tag]["players"]:
-                                            self.bot.player_data[clan_tag]["players"][p_name] = {"games_played": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0}
-                                            
-                                        p_stats = self.bot.player_data[clan_tag]["players"][p_name]
-                                        
-                                        if "winstreak" not in p_stats:
-                                            p_stats["winstreak"] = 0
-                                        if "highest_winstreak" not in p_stats:
-                                            p_stats["highest_winstreak"] = 0
-
-                                        p_stats["games_played"] += 1
+                                        self.bot.player_data[clan_tag]["highest_winstreak"] = self.bot.player_data[clan_tag]["winstreak"]
+                                    else:
                                         if is_win:
-                                            p_stats["wins"] += 1
-                                            p_stats["winstreak"] += 1
-                                            if p_stats["winstreak"] > p_stats["highest_winstreak"]:
-                                                p_stats["highest_winstreak"] = p_stats["winstreak"]
+                                            self.bot.player_data[clan_tag]["winstreak"] += 1
+                                            if self.bot.player_data[clan_tag]["winstreak"] > self.bot.player_data[clan_tag]["highest_winstreak"]:
+                                                self.bot.player_data[clan_tag]["highest_winstreak"] = self.bot.player_data[clan_tag]["winstreak"]
                                         else:
-                                            p_stats["winstreak"] = 0
+                                            self.bot.player_data[clan_tag]["winstreak"] = 0
 
-                                # Success! Clean up and Save.
-                                self.queued_games.discard(session_id)
+                                    # ANNOUNCE TO DISCORD
+                                    # Safely fetch the raw milliseconds timestamp of the game and the timestamp 1 hour ago
+                                    game_start_ms = int(info.get("start", 0)) if info.get("start") else 0
+                                    one_hour_ago_ms = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
+                                    
+                                    if not is_initial_scan and game_start_ms >= one_hour_ago_ms: 
+                                        for guild_id, data in list(self.bot.server_data.items()):
+                                            for tracker in data.get("trackers", []):
+                                                if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
+                                                    channel = self.bot.get_channel(tracker["channel_id"])
+                                                    if channel:
+                                                        embed = await self.create_match_embed(
+                                                            http_session, clan_tag, session, 
+                                                            tracker.get("track_losses", False), 
+                                                            self.match_details_cache
+                                                        )
+                                                        if embed:
+                                                            await channel.send(embed=embed)
 
-                                async with self.bot.save_lock:
-                                    self.bot.save_data()
-                                
-                                if not is_initial_scan:
-                                    print(f"Successfully processed & announced {session_id} for clan [{clan_tag}]. Win: {is_win}. Current Winstreak: {self.bot.player_data[clan_tag]['winstreak']}. Games left in queue: {len(self.queued_games)}")
+                                    already_counted_players = set()
+                                    for p in all_players:
+                                        if p.get("clanTag", "").upper() == clan_tag.upper():
+                                            p_name = p.get("username", "Unknown")
+                                            if p_name in already_counted_players: continue
 
-                            elif game_resp.status == 429:
-                                print(f"429 Rate Limit. Re-queueing {session_id}...")
-                                self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
-                                await asyncio.sleep(0.3)
-                            else:
-                                print(f"Error {game_resp.status}. Re-queueing {session_id}...")
-                                self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
+                                            already_counted_players.add(p_name)
+                                            
+                                            if p_name not in self.bot.player_data[clan_tag]["players"]:
+                                                self.bot.player_data[clan_tag]["players"][p_name] = {"games_played": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0}
+                                                
+                                            p_stats = self.bot.player_data[clan_tag]["players"][p_name]
+                                            
+                                            if "winstreak" not in p_stats:
+                                                p_stats["winstreak"] = 0
+                                            if "highest_winstreak" not in p_stats:
+                                                p_stats["highest_winstreak"] = 0
 
-                    except Exception as e:
-                        print(f"Network Hiccup on {session_id}. Re-queueing... ({e})")
-                        self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
-                        
+                                            p_stats["games_played"] += 1
+                                            if is_win:
+                                                p_stats["wins"] += 1
+                                                p_stats["winstreak"] += 1
+                                                if p_stats["winstreak"] > p_stats["highest_winstreak"]:
+                                                    p_stats["highest_winstreak"] = p_stats["winstreak"]
+                                            else:
+                                                p_stats["winstreak"] = 0
+
+                                    # Success! Clean up, Save, and break the inner loop to move on to the next game
+                                    self.queued_games.discard(session_id)
+
+                                    async with self.bot.save_lock:
+                                        self.bot.save_data()
+                                    
+                                    if not is_initial_scan:
+                                        print(f"Successfully processed & announced {session_id} for clan [{clan_tag}]. Win: {is_win}. Current Winstreak: {self.bot.player_data[clan_tag]['winstreak']}. Games left in queue: {len(self.queued_games)}")
+                                    
+                                    break 
+
+                                elif game_resp.status == 429:
+                                    print(f"429 Rate Limit. Pausing 5s before retrying {session_id}...")
+                                    await asyncio.sleep(5)
+                                else:
+                                    print(f"Error {game_resp.status}. Retrying {session_id} in 3s...")
+                                    await asyncio.sleep(3)
+
+                        except Exception as e:
+                            print(f"Network Hiccup on {session_id}. Retrying in 3s... ({e})")
+                            await asyncio.sleep(3)
+                            
                     self.live_queue.task_done()
-                    await asyncio.sleep(0.3) # Pace the live tracker so it doesn't fight the backfill
+                    await asyncio.sleep(0.3) 
                     
                 except Exception as e:
                     print(f"Live Queue Critical Error: {e}")

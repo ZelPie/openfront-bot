@@ -179,10 +179,12 @@ class LoadPlayers(commands.Cog):
                     await channel.send(f"[{tag_upper}] history is already fully processed.")
                     return
 
-                await channel.send(f"Found **{total_to_do}** missing games for clan **[{tag_upper}]**. Starting persistent queue...")
-                print(f"[{tag_upper}] STARTING PERSISTENT QUEUE for {total_to_do} games for clan {tag_upper}...")
+                # SORT CHRONOLOGICALLY: Oldest to Newest for accurate streak calculations!
+                games_to_process.sort(key=lambda x: x.get("gameStart", ""))
 
-                # PERSISTENT TIMER
+                await channel.send(f"Found **{total_to_do}** missing games for clan **[{tag_upper}]**. Starting persistent chronological queue...")
+                print(f"[{tag_upper}] STARTING PERSISTENT QUEUE for {total_to_do} games...")
+
                 async def timer():
                     try:
                         while True:
@@ -196,12 +198,19 @@ class LoadPlayers(commands.Cog):
                 processed_count = [0]
                 new_players = [0]
 
-                # SETUP QUEUE
+                # Initialize clan streak tracking if missing
+                if "winstreak" not in self.bot.player_data[tag_upper]:
+                    self.bot.player_data[tag_upper]["winstreak"] = 0
+                if "highest_winstreak" not in self.bot.player_data[tag_upper]:
+                    self.bot.player_data[tag_upper]["highest_winstreak"] = 0
+
                 self.current_queue = asyncio.Queue()
                 for game in games_to_process:
                     self.current_queue.put_nowait(game)
 
-                # QUEUE WORKER LOGIC
+                downloaded_games = {}
+
+                # Workers ONLY download the data concurrently, they do NOT apply stats
                 async def worker(wid):
                     while True:
                         try:
@@ -209,77 +218,114 @@ class LoadPlayers(commands.Cog):
                         except asyncio.CancelledError:
                             break
                             
-                        gid = game.get("gameId") if isinstance(game, dict) else game
-                        fallback_win = game.get("hasWon", False) if isinstance(game, dict) else False
+                        gid = game.get("gameId")
                         
-                        await asyncio.sleep(1)  
-
-                        success = False
-                        try:
-                            async with session.get(f"https://api.openfront.io/public/game/{gid}?turns=false", timeout=15) as g_resp:
-                                if g_resp.status == 200:
-                                    g_data = await g_resp.json()
-                                    info = g_data.get("info", {})
-                                    
-                                    # CHECK IF EMPTY: Re-queue if missing info or players
-                                    if not g_data or not info or not info.get("players"):
-                                        print(f"[Worker {wid}] Game {gid} returned empty. Re-queueing...")
-                                        # Only re-queue if we haven't been cancelled!
-                                        if not self.cancel_event.is_set():
-                                            self.current_queue.put_nowait(game)
+                        while True: # Keep trying this game until it succeeds
+                            if self.cancel_event.is_set():
+                                break
+                            try:
+                                async with session.get(f"https://api.openfront.io/public/game/{gid}?turns=false", timeout=15) as g_resp:
+                                    if g_resp.status == 200:
+                                        g_data = await g_resp.json()
+                                        info = g_data.get("info", {})
+                                        if not g_data or not info or not info.get("players"):
+                                            await asyncio.sleep(1) # API glitch, retry
+                                            continue
+                                        downloaded_games[gid] = g_data
+                                        break
+                                    elif g_resp.status == 429:
+                                        await asyncio.sleep(5)
                                     else:
-                                        g_start = info.get("start")
-                                        if g_start and int(g_start) >= one_hour_ago_ms:
-                                            success = True 
-                                        else:
-                                            is_win = g_data.get("hasWon", fallback_win)
-                                            players = info.get("players", [])
-                                            counted_here = set()
-
-                                            for p in players:
-                                                if p.get("clanTag", "").upper() == tag_upper:
-                                                    name = p.get("username", "Unknown")
-                                                    if name in counted_here: continue
-                                                    counted_here.add(name)
-
-                                                    if name not in self.bot.player_data[tag_upper]["players"]:
-                                                        self.bot.player_data[tag_upper]["players"][name] = {"name": [name], "games_played": 0, "wins": 0}
-                                                        new_players[0] += 1
-                                                    
-                                                    stats = self.bot.player_data[tag_upper]["players"][name]
-                                                    
-                                                    if not isinstance(stats.get("name"), list):
-                                                        stats["name"] = [stats.get("name", name)]
-                                                    if name not in stats["name"]:
-                                                        stats["name"].append(name)
-                                                        
-                                                    stats["games_played"] += 1
-                                                    if is_win: stats["wins"] += 1
-                                                    stats["winrate"] = round((stats["wins"] / stats["games_played"]) * 100, 2)
-
-                                            processed_count[0] += 1
-                                            self.bot.player_data[tag_upper]["total_games"] += 1
-                                            self.bot.processed_games[tag_upper].append(gid)
-                                            success = True
-                                            
-                                elif g_resp.status == 429:
-                                    print(f"[Worker {wid}] 429 Rate Limit. Pausing for 5s...")
-                                    await asyncio.sleep(5)
-                                    if not self.cancel_event.is_set():
-                                        self.current_queue.put_nowait(game)
-                                else:
-                                    print(f"[Worker {wid}] API Error {g_resp.status} on {gid}. Re-queueing...")
-                                    if not self.cancel_event.is_set():
-                                        self.current_queue.put_nowait(game)
-
-                        except Exception as e:
-                            if not self.cancel_event.is_set():
-                                self.current_queue.put_nowait(game)
-                            
+                                        downloaded_games[gid] = None # 404 error, skip
+                                        break
+                            except Exception:
+                                await asyncio.sleep(2)
+                                
                         self.current_queue.task_done()
+                        await asyncio.sleep(0.5)
+
+                # Auto saver task
+                async def auto_saver():
+                    try:
+                        while True:
+                            await asyncio.sleep(60)
+                            async with self.bot.save_lock:
+                                self.bot.save_data()
+                    except asyncio.CancelledError:
+                        pass
+
+                saver_task = asyncio.create_task(auto_saver())
+                workers_list = [asyncio.create_task(worker(i)) for i in range(3)]
+                
+                # SEQUENTIAL PROCESSOR: Applies the data strictly in chronological order
+                for game in games_to_process:
+                    if self.cancel_event.is_set():
+                        break
                         
-                        if success and processed_count[0] % 50 == 0 and processed_count[0] > 0:
-                            print(f"[{tag_upper}] Backfill progress: {processed_count[0]} / {total_to_do}...")
+                    gid = game.get("gameId")
+                    fallback_win = game.get("hasWon", False)
+                    
+                    # Wait until the workers have fetched this exact game
+                    while gid not in downloaded_games:
+                        if self.cancel_event.is_set():
+                            break
+                        await asyncio.sleep(0.1)
+                        
+                    if self.cancel_event.is_set():
+                        break
+                        
+                    g_data = downloaded_games.pop(gid) # Retrieve and clear from memory
+                    
+                    if g_data:
+                        info = g_data.get("info", {})
+                        is_win = g_data.get("hasWon", fallback_win)
+                        
+                        # Update Clan Winstreak Chronologically
+                        if is_win:
+                            self.bot.player_data[tag_upper]["winstreak"] += 1
+                            if self.bot.player_data[tag_upper]["winstreak"] > self.bot.player_data[tag_upper]["highest_winstreak"]:
+                                self.bot.player_data[tag_upper]["highest_winstreak"] = self.bot.player_data[tag_upper]["winstreak"]
+                        else:
+                            self.bot.player_data[tag_upper]["winstreak"] = 0
+
+                        # Update Player Winstreaks Chronologically
+                        players = info.get("players", [])
+                        counted_here = set()
+                        for p in players:
+                            if p.get("clanTag", "").upper() == tag_upper:
+                                name = p.get("username", "Unknown")
+                                if name in counted_here: continue
+                                counted_here.add(name)
+
+                                if name not in self.bot.player_data[tag_upper]["players"]:
+                                    self.bot.player_data[tag_upper]["players"][name] = {
+                                        "name": [name], "games_played": 0, "wins": 0, 
+                                        "winstreak": 0, "highest_winstreak": 0
+                                    }
+                                    new_players[0] += 1
+                                
+                                stats = self.bot.player_data[tag_upper]["players"][name]
+                                
+                                if "winstreak" not in stats: stats["winstreak"] = 0
+                                if "highest_winstreak" not in stats: stats["highest_winstreak"] = 0
+                                    
+                                stats["games_played"] += 1
+                                if is_win: 
+                                    stats["wins"] += 1
+                                    stats["winstreak"] += 1
+                                    if stats["winstreak"] > stats["highest_winstreak"]:
+                                        stats["highest_winstreak"] = stats["winstreak"]
+                                else:
+                                    stats["winstreak"] = 0
+                                    
+                                stats["winrate"] = round((stats["wins"] / stats["games_played"]) * 100, 2)
+
+                        processed_count[0] += 1
+                        self.bot.player_data[tag_upper]["total_games"] += 1
+                        self.bot.processed_games[tag_upper].append(gid)
+                        
+                    if processed_count[0] % 50 == 0 and processed_count[0] > 0:
+                        print(f"[{tag_upper}] Backfill progress: {processed_count[0]} / {total_to_do}...")
                             
                         await asyncio.sleep(0.9)
 
