@@ -7,11 +7,12 @@ from datetime import datetime, timedelta, timezone
 import re
 from dotenv import load_dotenv
 import os
-from math import ceil, floor
+
+from .fetch_worker import fetch_game_worker
 
 load_dotenv()
 
-dev_server_id = int(os.getenv('DEV_SERVER_ID', '0'))  # Default to 0 if not set
+dev_server_id = int(os.getenv('DEV_SERVER_ID', '0'))
 
 class LoadPlayers(commands.Cog):
     def __init__(self, bot):
@@ -23,28 +24,26 @@ class LoadPlayers(commands.Cog):
         if not hasattr(self.bot, 'is_swarm_active'):
             self.bot.is_swarm_active = False
 
-        # --- Cancellation State ---
         self.cancel_event = asyncio.Event()
         self.current_queue = None
 
     @app_commands.command(name="cancel-load", description="Cancels the currently running background load and saves progress.")
     async def cancel_load(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("You don't have permission to cancel background loads. Only administrators can do this.", ephemeral=True)
+            await interaction.response.send_message("You don't have permission to cancel.", ephemeral=True)
             return
 
         if interaction.guild_id != dev_server_id:
-            await interaction.response.send_message("This command is currently restricted to the developer's server for performance reasons.", ephemeral=True)
+            await interaction.response.send_message("Restricted to developer server.", ephemeral=True)
             return
 
         if not getattr(self.bot, 'is_swarm_active', False):
-            await interaction.response.send_message("There is no background load currently running.", ephemeral=True)
+            await interaction.response.send_message("No background load currently running.", ephemeral=True)
             return
 
         self.cancel_event.set()
         await interaction.response.send_message("**Cancellation requested!** The bot will finish its current active games, save progress, and stop.")
 
-        # Instantly empty the queue so workers stop grabbing new games
         if self.current_queue:
             while not self.current_queue.empty():
                 try:
@@ -57,25 +56,22 @@ class LoadPlayers(commands.Cog):
     @app_commands.describe(clan_tag="The clan's tag (e.g., UN)")
     async def load_players(self, interaction: discord.Interaction, clan_tag: str):
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("You don't have permission to start background loads. Only administrators can do this.", ephemeral=True)
+            await interaction.response.send_message("You don't have permission.", ephemeral=True)
             return
 
         if interaction.guild_id != dev_server_id:
-            await interaction.response.send_message("This command is currently restricted to the developer's server for performance reasons.", ephemeral=True)
+            await interaction.response.send_message("Restricted to developer server.", ephemeral=True)
             return
 
         if getattr(self.bot, 'is_swarm_active', False):
-            await interaction.response.send_message(
-                "A background load is already running for another clan. Please wait for it to finish.", 
-                ephemeral=True
-            )
+            await interaction.response.send_message("A background load is already running.", ephemeral=True)
             return
 
         tag_upper = clan_tag.upper()
-        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)
 
         if len(tag_upper) == 0 or len(tag_upper) > 5:
-            await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
+            await interaction.response.send_message("Please provide a valid clan tag.", ephemeral=True)
             return
 
         await interaction.response.send_message(f"Paging backward through history for [{tag_upper}] to build the queue...")
@@ -84,7 +80,6 @@ class LoadPlayers(commands.Cog):
         self.bot.loop.create_task(self.background_loader(tag_upper, interaction.channel))
 
     async def background_loader(self, tag_upper, channel):
-        # Reset cancellation state for the new load
         self.cancel_event.clear()
         self.current_queue = None
         
@@ -101,13 +96,6 @@ class LoadPlayers(commands.Cog):
         if tag_upper not in self.bot.processed_games:
             self.bot.processed_games[tag_upper] = []
 
-        # Start time logic: 1 hour ago down to 1 day ago
-        one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
-        one_hour_ago_ms = int(one_hour_ago.timestamp() * 1000)
-        
-        current_end = one_hour_ago
-        current_start = current_end - timedelta(days=1)
-
         try:
             async with aiohttp.ClientSession() as session:
                 games_to_process = []
@@ -123,127 +111,106 @@ class LoadPlayers(commands.Cog):
                     total_games = int(data.get("total", 0))
                     print(f"[{tag_upper}] Total games according to API: {total_games}")
 
-                    cutoff_date = datetime(2025, 11, 10, tzinfo=timezone.utc)
-
-
-                # GATHER ALL UNPROCESSED GAMES
-                while True and total_games > 0 and len(seen_game_ids) + len(self.bot.processed_games[tag_upper]) < total_games:
-                    if self.cancel_event.is_set():
-                        await channel.send(f"Scan for **[{tag_upper}]** cancelled by user during the paging phase. Aborting.")
-                        return
-                    
-                    if current_end < cutoff_date:
-                        break
-                    
-                    start_iso = current_start.strftime('%Y-%m-%dT%H:%M:%SZ')
-                    end_iso = current_end.strftime('%Y-%m-%dT%H:%M:%SZ')
-                    
+                # --- PAGING PHASE ---
+                if total_games <= 10000:
+                    # STRATEGY A: Fast Standard Pagination (No Time Chunking)
                     page = 1
-                    day_results_count = 0
+                    while len(seen_game_ids) + len(self.bot.processed_games[tag_upper]) < total_games:
+                        if self.cancel_event.is_set():
+                            await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
+                            return
+                            
+                        async with session.get(f"{base_url}?page={page}&limit=50") as resp:
+                            if resp.status == 429:
+                                await asyncio.sleep(1)
+                                continue
+                            if resp.status != 200:
+                                break
+                                
+                            page_data = await resp.json()
+                            results = page_data.get("results", [])
+                            
+                            if not results:
+                                break
+                                
+                            for game in results:
+                                gid = game.get("gameId")
+                                if not gid or gid in seen_game_ids:
+                                    continue
+                                    
+                                seen_game_ids.add(gid)
+                                if gid in self.bot.processed_games[tag_upper]:
+                                    consecutive_processed_count += 1
+                                    continue
+                                        
+                                games_to_process.append(game)
+                                consecutive_processed_count = 0
+                                
+                        if consecutive_processed_count >= 2000:
+                            break
+                            
+                        page += 1
+                        await asyncio.sleep(0.3)
+                else:
+                    # STRATEGY B: Time-Chunked Pagination for > 10,000 Games
+                    cutoff_date = datetime(2025, 11, 10, tzinfo=timezone.utc)
+                    current_end = datetime.now(timezone.utc)
+                    current_start = current_end - timedelta(days=3)
                     
-                    # Paging within the specific day chunk
-                    if total_games > 10000:
-
-                        chunks = ceil((total_games / 10000))
-
-                        day_chunk = floor((current_end - current_start) / chunks)
-
-                        print("over 10000)")
+                    while len(seen_game_ids) + len(self.bot.processed_games[tag_upper]) < total_games:
+                        if self.cancel_event.is_set():
+                            await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
+                            return
+                        if current_end < cutoff_date:
+                            break
+                            
+                        start_iso = current_start.strftime('%Y-%m-%dT%H:%M:%SZ')
+                        end_iso = current_end.strftime('%Y-%m-%dT%H:%M:%SZ')
+                        
+                        page = 1
                         while True:
                             page_url = f"{base_url}?start={start_iso}&end={end_iso}&page={page}&limit=50"
-                            
                             async with session.get(page_url) as resp:
+                                if resp.status == 429:
+                                    await asyncio.sleep(1)
+                                    continue
                                 if resp.status != 200:
-                                    print(f"[{tag_upper}] API Error {resp.status} while paging.")
-                                    if resp.status == 429:
-                                        await asyncio.sleep(1)
-                                        continue
                                     break
                                     
                                 page_data = await resp.json()
                                 results = page_data.get("results", [])
                                 
-                                if not results or not isinstance(results, list) or len(results) == 0:
-                                    break 
-                                    
-                                for game in results:
-                                    game_id = game.get("gameId")
-                                    if not game_id or game_id in seen_game_ids:
-                                        continue
-                                    
-                                    seen_game_ids.add(game_id)
-                                    
-                                    if game_id in self.bot.processed_games[tag_upper]:
-                                        consecutive_processed_count += 1
-                                        continue
-                                            
-                                    games_to_process.append(game)
-                                    consecutive_processed_count = 0 
-                                    day_results_count += 1
-                                    
-                                    print(f"seen + processed: {len(seen_game_ids)} + {len(self.bot.processed_games[tag_upper])}")
-
-                                    if total_games > 0 and len(seen_game_ids) + len(self.bot.processed_games[tag_upper]) >= total_games:
-                                        break
-
-                                page += 1
-                                await asyncio.sleep(0.5) 
-                    else:
-                        print("under 10000")
-                        while True:
-                            async with session.get(f"{base_url}?page={page}&limit=50") as resp:
-                                if resp.status != 200:
-                                    print(f"[{tag_upper}] API Error {resp.status} while paging.")
-                                    if resp.status == 429:
-                                        await asyncio.sleep(1)
-                                        continue
+                                if not results:
                                     break
                                     
-                                page_data = await resp.json()
-                                results = page_data.get("results", [])
-                                
-                                if not results or not isinstance(results, list) or len(results) == 0:
-                                    break 
-                                    
                                 for game in results:
-                                    game_id = game.get("gameId")
-                                    if not game_id or game_id in seen_game_ids:
+                                    gid = game.get("gameId")
+                                    if not gid or gid in seen_game_ids:
                                         continue
-                                    
-                                    seen_game_ids.add(game_id)
-                                    
-                                    if game_id in self.bot.processed_games[tag_upper]:
+                                        
+                                    seen_game_ids.add(gid)
+                                    if gid in self.bot.processed_games[tag_upper]:
                                         consecutive_processed_count += 1
                                         continue
-                                            
+                                        
                                     games_to_process.append(game)
-                                    consecutive_processed_count = 0 
-                                    day_results_count += 1
-
-                                    print(f"seen + processed: {len(seen_game_ids)} + {len(self.bot.processed_games[tag_upper])}")
-
-                                    if total_games > 0 and len(seen_game_ids) + len(self.bot.processed_games[tag_upper]) >= total_games:
-                                        break
-
-                                page += 1
-                                await asyncio.sleep(0.5)
-
-                    if consecutive_processed_count >= 2000:
-                        break
-                    
-                    if len(games_to_process) > 0 and len(seen_game_ids) >= len(games_to_process) + len(self.bot.processed_games[tag_upper]):
-                        break
-                        
-                    # Shift to the previous day
-                    current_end = current_start
-                    current_start = current_start - timedelta(days=day_chunk if total_games > 10000 else 1)
+                                    consecutive_processed_count = 0
+                                    
+                            page += 1
+                            await asyncio.sleep(0.3)
+                            
+                        if consecutive_processed_count >= 2000:
+                            break
+                            
+                        # Slide window back 3 days
+                        current_end = current_start
+                        current_start = current_start - timedelta(days=3)
 
                 total_to_do = len(games_to_process)
                 if total_to_do == 0:
                     await channel.send(f"[{tag_upper}] history is already fully processed.")
                     return
 
-                # SORT CHRONOLOGICALLY: Oldest to Newest for accurate streak calculations!
                 games_to_process.sort(key=lambda x: x.get("gameStart", ""))
 
                 await channel.send(f"Found **{total_to_do}** missing games for clan **[{tag_upper}]**. Starting persistent chronological queue...")
@@ -262,7 +229,6 @@ class LoadPlayers(commands.Cog):
                 processed_count = [0]
                 new_players = [0]
 
-                # Initialize clan streak tracking if missing
                 if "winstreak" not in self.bot.player_data[tag_upper]:
                     self.bot.player_data[tag_upper]["winstreak"] = 0
                 if "highest_winstreak" not in self.bot.player_data[tag_upper]:
@@ -274,41 +240,12 @@ class LoadPlayers(commands.Cog):
 
                 downloaded_games = {}
 
-                # Workers ONLY download the data concurrently, they do NOT apply stats
-                async def worker(wid):
-                    while True:
-                        try:
-                            game = await self.current_queue.get()
-                        except asyncio.CancelledError:
-                            break
-                            
-                        gid = game.get("gameId")
-                        
-                        while True: # Keep trying this game until it succeeds
-                            if self.cancel_event.is_set():
-                                break
-                            try:
-                                async with session.get(f"https://api.openfront.io/public/game/{gid}?turns=false", timeout=15) as g_resp:
-                                    if g_resp.status == 200:
-                                        g_data = await g_resp.json()
-                                        info = g_data.get("info", {})
-                                        if not g_data or not info or not info.get("players"):
-                                            await asyncio.sleep(1) # API glitch, retry
-                                            continue
-                                        downloaded_games[gid] = g_data
-                                        break
-                                    elif g_resp.status == 429:
-                                        await asyncio.sleep(5)
-                                    else:
-                                        downloaded_games[gid] = None # 404 error, skip
-                                        break
-                            except Exception:
-                                await asyncio.sleep(2)
-                                
-                        self.current_queue.task_done()
-                        await asyncio.sleep(0.5)
-
-                # Auto saver task
+                # Create tasks using the imported shared worker
+                workers_list = [
+                    asyncio.create_task(fetch_game_worker(i, session, self.current_queue, self.cancel_event, downloaded_games)) 
+                    for i in range(3)
+                ]
+                
                 async def auto_saver():
                     try:
                         while True:
@@ -319,9 +256,7 @@ class LoadPlayers(commands.Cog):
                         pass
 
                 saver_task = asyncio.create_task(auto_saver())
-                workers_list = [asyncio.create_task(worker(i)) for i in range(3)]
                 
-                # SEQUENTIAL PROCESSOR: Applies the data strictly in chronological order
                 for game in games_to_process:
                     if self.cancel_event.is_set():
                         break
@@ -329,7 +264,6 @@ class LoadPlayers(commands.Cog):
                     gid = game.get("gameId")
                     fallback_win = game.get("hasWon", False)
                     
-                    # Wait until the workers have fetched this exact game
                     while gid not in downloaded_games:
                         if self.cancel_event.is_set():
                             break
@@ -338,13 +272,12 @@ class LoadPlayers(commands.Cog):
                     if self.cancel_event.is_set():
                         break
                         
-                    g_data = downloaded_games.pop(gid) # Retrieve and clear from memory
+                    g_data = downloaded_games.pop(gid)
                     
                     if g_data:
                         info = g_data.get("info", {})
                         is_win = g_data.get("hasWon", fallback_win)
                         
-                        # Update Clan Winstreak Chronologically
                         if is_win:
                             self.bot.player_data[tag_upper]["winstreak"] += 1
                             if self.bot.player_data[tag_upper]["winstreak"] > self.bot.player_data[tag_upper]["highest_winstreak"]:
@@ -352,7 +285,6 @@ class LoadPlayers(commands.Cog):
                         else:
                             self.bot.player_data[tag_upper]["winstreak"] = 0
 
-                        # Update Player Winstreaks Chronologically
                         players = info.get("players", [])
                         counted_here = set()
                         for p in players:
@@ -393,30 +325,13 @@ class LoadPlayers(commands.Cog):
                             
                         await asyncio.sleep(0.9)
 
-                # Auto saver task in case
-                async def auto_saver():
-                    try:
-                        while True:
-                            await asyncio.sleep(60)
-                            async with self.bot.save_lock:
-                                self.bot.save_data()
-                    except asyncio.CancelledError:
-                        pass
-
-                # Start tasks
-                saver_task = asyncio.create_task(auto_saver())
-                workers_list = [asyncio.create_task(worker(i)) for i in range(3)]
-                
-                # Wait until the queue is completely empty (or emptied by the cancel command)
                 await self.current_queue.join()
                 
-                # Cleanup tasks
                 saver_task.cancel()
                 timer_task.cancel()
                 for w in workers_list:
                     w.cancel()
                 
-                # FORMAT FINAL TIME & SAVE
                 total_secs = self.bot.player_data[tag_upper].get("load_time_seconds", 0)
                 m, s = divmod(total_secs, 60)
                 h, m = divmod(m, 60)
@@ -431,15 +346,12 @@ class LoadPlayers(commands.Cog):
                         f"Saved **{processed_count[0]}** new games and **{new_players[0]}** new players.\n"
                         f"⏱ **Time Spent:** `{formatted_time}`"
                     )
-
-                    print(f"[{tag_upper}] BACKGROUND LOAD CANCELLED by user. Saved {processed_count[0]} games and {new_players[0]} new players. Time spent: {formatted_time}")
                 else:
                     await channel.send(
                         f"**[{tag_upper}]** Background load complete! Every game was successfully found and processed.\n"
                         f"Added **{processed_count[0]}** games and **{new_players[0]}** new players.\n"
                         f"⏱ **Total Time Taken:** `{formatted_time}`"
                     )
-                    print(f"[{tag_upper}] BACKGROUND LOAD COMPLETE! Added {processed_count[0]} games and {new_players[0]} new players. Total time: {formatted_time}")
 
         except Exception as e:
             await channel.send(f"An error occurred during backfill: {e}")

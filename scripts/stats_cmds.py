@@ -235,10 +235,6 @@ class StatsCmds(commands.Cog):
                 reverse = not reverse_sort
             )
 
-        for p in players:
-            print(p)
-        print(len(sorted_players))
-
         if not sorted_players:
             await interaction.response.send_message(f"No players are currently being tracked for clan **[{tag_upper}]**.", ephemeral=True)
             return
