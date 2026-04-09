@@ -42,4 +42,4 @@ async def fetch_game_worker(worker_id, session, queue, cancel_event, downloaded_
             downloaded_games[gid] = None
             
         queue.task_done()
-        await asyncio.sleep(0.3)  # Rate limit: 3 requests per second per worker
+        await asyncio.sleep(0.2)  # Rate limit: 3 requests per second per worker

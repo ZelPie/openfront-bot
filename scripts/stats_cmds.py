@@ -200,8 +200,9 @@ class StatsCmds(commands.Cog):
         app_commands.Choice(name="Win Rate", value="winrate"),
         app_commands.Choice(name="Games Played", value="games"),
         app_commands.Choice(name='Total Wins', value="wins"),
+        app_commands.Choice(name='Highest Winstreak', value="highest_winstreak"),
     ])
-    async def clan_players(self, interaction: discord.Interaction, clan_tag: str, num: int = 50, min_games: int = 5, sort_by: str = "default", reverse_sort: bool = False):
+    async def clan_players(self, interaction: discord.Interaction, clan_tag: str, num: int = 5, min_games: int = 5, sort_by: str = "default", reverse_sort: bool = False):
         tag_upper = clan_tag.upper()
         tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper) 
 
@@ -234,6 +235,12 @@ class StatsCmds(commands.Cog):
                 key=lambda x: (x[1].get("wins", 0), x[1].get("games_played", 0)),
                 reverse = not reverse_sort
             )
+        elif sort_by == "highest_winstreak":
+            sorted_players = sorted(
+                [x for x in players.items() if x[1].get("games_played", 0) >= min_games],
+                key=lambda x: (x[1].get("highest_winstreak", 0), x[1].get("winrate", 0), x[1].get("games_played", 0)),
+                reverse = not reverse_sort
+            )
 
         if not sorted_players:
             await interaction.response.send_message(f"No players are currently being tracked for clan **[{tag_upper}]**.", ephemeral=True)
@@ -249,8 +256,10 @@ class StatsCmds(commands.Cog):
             losses = games_played - wins
             winrate = (wins / games_played) * 100 if games_played > 0 else 0.0
             percent_of_clan = (games_played / total_clan_games * 100) if total_clan_games > 0 else 0
+            winstreak = stats.get("winstreak", 0)
+            highest_winstreak = stats.get("highest_winstreak", 0)
             
-            return f"**#{rank}. {p_id}**\n- Games: {games_played}\n- Percent of Clan Games: {percent_of_clan:.1f}%\n- Win Rate: {winrate:.1f}%\n- W/L: {wins}/{losses}\n\n"
+            return f"**#{rank}. {p_id}**\n- Games: {games_played}\n- Percent of Clan Games: {percent_of_clan:.1f}%\n- Win Rate: {winrate:.1f}%\n- W/L: {wins}/{losses}\n- Current Winstreak: {winstreak}\n- Highest Winstreak: {highest_winstreak}\n\n"
 
         # 2. Create the Paginator
         view = LbDisplay(
