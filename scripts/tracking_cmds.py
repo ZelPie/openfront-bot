@@ -41,8 +41,7 @@ class TrackingCmds(commands.Cog):
             "channel_id": channel.id,
             "clan_tag": tag_upper,
             "api_url": f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions", 
-            "last_session_id": None,
-            "track_losses": track_losses
+            "track_losses": track_losses,
         }
         
         self.bot.server_data[guild_id]["trackers"].append(new_tracker)
