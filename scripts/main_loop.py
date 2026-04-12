@@ -231,18 +231,16 @@ class BackgroundLoop(commands.Cog):
                         self.bot.player_data[clan_tag]["highest_winstreak"] = 0
                     if "players" not in self.bot.player_data[clan_tag]:
                         self.bot.player_data[clan_tag]["players"] = {}
+                    if "wins" not in self.bot.player_data[clan_tag]:
+                        self.bot.player_data[clan_tag]["wins"] = 0
 
                 if clan_tag not in self.bot.processed_games:
                     self.bot.processed_games[clan_tag] = []
                 
-                if "wins" not in self.bot.player_data[clan_tag]:
-                    self.bot.player_data[clan_tag]["wins"] = 0
+                now = datetime.now(timezone.utc) - timedelta(hours=1)
+                self.bot.player_data[clan_tag]["scan_time"] = int(now.timestamp() * 1000)
 
-                if "initial_scan_time" not in self.bot.player_data[clan_tag]:
-                    now = datetime.now(timezone.utc) - timedelta(hours=1)
-                    self.bot.player_data[clan_tag]["initial_scan_time"] = int(now.timestamp() * 1000)
-
-                initial_scan_time = self.bot.player_data[clan_tag].get("initial_scan_time")
+                scan_time = self.bot.player_data[clan_tag].get("scan_time")
 
                 async with self.bot.save_lock:
                     self.bot.save_data()
@@ -287,7 +285,7 @@ class BackgroundLoop(commands.Cog):
                             continue
                         game_start_ms = datetime.fromisoformat(iso.replace('Z', '+00:00')).timestamp() * 1000
                         if session_id and session_id not in self.bot.processed_games[clan_tag] and session_id not in self.queued_games:
-                            if initial_scan_time < game_start_ms:
+                            if scan_time < game_start_ms:
                                 new_sessions.append(session)
                     except Exception as e:
                         print(f"Error: {e}")
@@ -295,7 +293,7 @@ class BackgroundLoop(commands.Cog):
                 if new_sessions:
                     # Feed into the queue strictly oldest-first
                     for session in new_sessions:
-                        self.live_queue.put_nowait((clan_tag, session, initial_scan_time))
+                        self.live_queue.put_nowait((clan_tag, session, scan_time))
                         self.queued_games.add(session.get("gameId"))
 
                     print(f"Queued {len(new_sessions)} new games for clan [{clan_tag}].")

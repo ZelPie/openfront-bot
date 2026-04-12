@@ -3,6 +3,7 @@ from discord.ext import commands
 import json
 import os
 from dotenv import load_dotenv
+from scripts.clan_manager import ClanDataManager
 
 load_dotenv()
 intents = discord.Intents.default()
