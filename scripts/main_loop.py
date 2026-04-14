@@ -8,16 +8,11 @@ from datetime import datetime, timedelta, timezone
 class BackgroundLoop(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-
-        if not hasattr(self.bot, 'save_lock'):
-            self.bot.save_lock = asyncio.Lock()
         
-        # Live Tracking Queue System
         self.live_queue = asyncio.Queue()
-        self.queued_games = set() # Keeps track of what's already in line
+        self.queued_games = set() 
         self.match_details_cache = {}
         
-        # Start the background worker and the 15-second scout
         self.worker_task = self.bot.loop.create_task(self.live_worker())
         self.check_clan_stats.start()
 
@@ -40,27 +35,41 @@ class BackgroundLoop(commands.Cog):
         raw_start = session.get("start")
         raw_end = session.get("end")
         all_players = []
+        max_players = 0
+        player_teams = 0
         
         if session_id in match_cache:
             cache_data = match_cache[session_id]
             all_players = cache_data.get("players", [])
             if not raw_start: raw_start = cache_data.get("start")
             if not raw_end: raw_end = cache_data.get("end")
+
+            max_players = cache_data.get("maxPlayers", 0)
+            player_teams = cache_data.get("playerTeams", 0)
         else:
+            all_data = False
             game_url = f"https://api.openfront.io/public/game/{session_id}?turns=false"
-            try:
-                async with http_session.get(game_url, timeout=10) as game_response:
-                    if game_response.status == 200:
-                        game_data = await game_response.json()
-                        info = game_data.get("info", {})
-                        all_players = info.get("players", [])
-                        
-                        if not raw_start: raw_start = info.get("start")
-                        if not raw_end: raw_end = info.get("end")
-                        
-                        match_cache[session_id] = {"players": all_players, "start": raw_start, "end": raw_end}
-            except Exception as e:
-                print(f"Failed to fetch player details for session {session_id}: {e}")
+            while not all_data:
+                try:
+                    async with http_session.get(game_url, timeout=10) as game_response:
+                        if game_response.status == 200:
+                            game_data = await game_response.json()
+                            info = game_data.get("info", {})
+                            all_players = info.get("players", [])
+                            config = info.get("config", {})
+                            
+                            if not raw_start: raw_start = info.get("start")
+                            if not raw_end: raw_end = info.get("end")
+                            
+                            max_players = config.get("maxPlayers")
+                            player_teams = config.get("playerTeams")
+
+                            match_cache[session_id] = {"players": all_players, "start": raw_start, "end": raw_end, "maxPlayers": max_players, "playerTeams": player_teams}
+
+                            if all_players and game_data and config:
+                                all_data = True
+                except Exception as e:
+                    print(f"Failed to fetch player details for session {session_id}: {e}")
 
         start_display = "Unknown"
         end_display = "Unknown"
@@ -90,22 +99,33 @@ class BackgroundLoop(commands.Cog):
         player_names = ", ".join(clan_players) if clan_players else "Unknown Players"
 
         stats_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}"
-        try:
-            async with http_session.get(stats_url, timeout=5) as stat_resp:
-                if stat_resp.status == 200:
-                    clan_data = await stat_resp.json()
-                else:
-                    clan_data = {}
-        except Exception:
-            clan_data = {}
+
+        all_data = False
+        retries = 0
+        while not all_data:
+            try:
+                async with http_session.get(stats_url, timeout=5) as stat_resp:
+                    if stat_resp.status == 200:
+                        clan_data = await stat_resp.json()
+                    else:
+                        clan_data = {}
+                    
+                    if clan_data and clan_data.get("clan", {}).get("games", 0) is not None or retries >= 3:
+                        all_data = True
+                    retries += 1
+            except Exception:
+                clan_data = {}
+                retries += 1
                 
         c_stats = clan_data.get("clan", {})
         overall_wins = c_stats.get("wins", 0)
         overall_games = c_stats.get("games", 0)
         overall_losses = overall_games - overall_wins
         overall_wl = c_stats.get("weightedWLRatio", 0.0)
-        winstreak = self.bot.player_data.get(clan_tag, {}).get("winstreak", 0)
-        highest_winstreak = self.bot.player_data.get(clan_tag, {}).get("highest_winstreak", 0)
+        
+        local_stats = await self.bot.clan_manager.get_clan_stats(clan_tag)
+        winstreak = local_stats.get("winstreak", 0)
+        highest_winstreak = local_stats.get("highest_winstreak", 0)
         
         if is_win:
             title = f"Clan [{clan_tag}] Victory!"
@@ -117,6 +137,13 @@ class BackgroundLoop(commands.Cog):
             title = f"Clan [{clan_tag}] Defeat..."
             color = discord.Color.red()
             rating_text = f"**{score}** Weighted Wins"
+        
+        display_gamemode = ""
+
+        if gamemode.lower() in ["trios", "quads", "duos"]:
+            display_gamemode = f"{gamemode} ({num_teams} Teams)"
+        else:
+            display_gamemode = f"{num_teams} teams of {max_players // player_teams}" if max_players and player_teams else "Unknown Mode 1"
 
         embed = discord.Embed(title=title, color=color)
         embed.add_field(name="Started", value=start_display, inline=True)
@@ -125,7 +152,7 @@ class BackgroundLoop(commands.Cog):
         embed.add_field(name="Rating Change", value=rating_text, inline=False)
         embed.add_field(name="Winstreak", value=f"Current: **{winstreak}** | Highest: **{highest_winstreak}**", inline=False)
         embed.add_field(name="Clan Players", value = f"``{player_count}`` / ``{total_players}``", inline=True)
-        embed.add_field(name="Gamemode", value=f"{gamemode} ({num_teams} Teams)", inline=True)
+        embed.add_field(name="Gamemode", value=f"{display_gamemode}", inline=True)
         embed.add_field(name="Clan Players in Match", value=f"{player_names}", inline=False)
         embed.add_field(name="New Overall Clan Stats", value=f"Total: **{overall_wins}W** - **{overall_losses}L** (W/L: **{overall_wl:.2f}**)", inline=False)
         
@@ -144,14 +171,12 @@ class BackgroundLoop(commands.Cog):
             return
 
         await interaction.response.defer()
-        # Update URL for the new format
         api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions?limit=1"
         try:
             async with aiohttp.ClientSession() as http_session:
                 async with http_session.get(api_url, timeout=10) as response:
                     if response.status == 200:
                         api_data = await response.json()
-                        # Extract the 'results' list
                         sessions = api_data.get("results", [])
                         
                         if not sessions or not sessions[0].get("gameId"):
@@ -161,7 +186,7 @@ class BackgroundLoop(commands.Cog):
                         latest_session = sessions[-1] 
                         embed = await self.create_match_embed(http_session, clan_tag, latest_session, track_losses=True)
                         if embed:
-                            await interaction.followup.send(content=f"**TEST MODE:** Latest match for [{clan_tag}]", embed=embed)
+                            await interaction.followup.send(content=f"**TEST MODE:** Latest match for [{clan_tag.upper()}]", embed=embed)
                         else:
                             await interaction.followup.send("Failed to build embed.")
                     else:
@@ -169,7 +194,6 @@ class BackgroundLoop(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"An error occurred during test: {e}")
 
-    # BACKGROUND LOOP CODE
     @tasks.loop(seconds=30) 
     async def check_clan_stats(self):
         unique_clans = set()
@@ -178,35 +202,17 @@ class BackgroundLoop(commands.Cog):
                 if tracker.get("clan_tag"):
                     unique_clans.add(tracker["clan_tag"])
         
-        twelve_hours_ago = datetime.now(timezone.utc) - timedelta(hours=12)
-        iso_timestamp = twelve_hours_ago.strftime('%Y-%m-%dT%H:%M:%SZ')
+        # Pull strictly 1 hour of history for every clan, regardless of channel trackers
+        one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+        iso_timestamp = one_hour_ago.strftime('%Y-%m-%dT%H:%M:%SZ')
 
         print(f"Checking for new games for {len(unique_clans) if unique_clans else 'no'} clans. . .")
         
         async with aiohttp.ClientSession() as http_session:
             for clan_tag in unique_clans:
-                # Setup clan data
-                if clan_tag not in self.bot.player_data:
-                    self.bot.player_data[clan_tag] = {"total_games": 0, "winstreak": 0, "highest_winstreak": 0, "players": {}}
-                else:
-                    if "total_games" not in self.bot.player_data[clan_tag]:
-                        self.bot.player_data[clan_tag]["total_games"] = 0
-                    if "winstreak" not in self.bot.player_data[clan_tag]:
-                        self.bot.player_data[clan_tag]["winstreak"] = 0
-                    if "highest_winstreak" not in self.bot.player_data[clan_tag]:
-                        self.bot.player_data[clan_tag]["highest_winstreak"] = 0
-                    if "players" not in self.bot.player_data[clan_tag]:
-                        self.bot.player_data[clan_tag]["players"] = {}
-
-                if clan_tag not in self.bot.processed_games:
-                    self.bot.processed_games[clan_tag] = []
-
-                is_initial_scan = len(self.bot.processed_games[clan_tag]) == 0
-
                 sessions = []
                 page = 1
                 try:
-                    # Loop through pages until empty
                     while True:
                         api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions?start={iso_timestamp}&page={page}&limit=50"
                         async with http_session.get(api_url, timeout=10) as response:
@@ -216,7 +222,7 @@ class BackgroundLoop(commands.Cog):
                             api_data = await response.json()
                             results = api_data.get("results", [])
                             
-                            if not results: # Results empty, stop paging
+                            if not results:
                                 break
                                 
                             sessions.extend(results)
@@ -228,7 +234,6 @@ class BackgroundLoop(commands.Cog):
                 if not sessions:
                     continue
 
-                # Ensure oldest games are first!
                 sessions.sort(key=lambda x: x.get("gameStart", ""))
 
                 if not isinstance(sessions[0], dict) or not sessions[0].get("gameId"):
@@ -236,32 +241,36 @@ class BackgroundLoop(commands.Cog):
 
                 new_sessions = []
                 for session in sessions:
-                    session_id = session.get("gameId")
-                    if session_id and session_id not in self.bot.processed_games[clan_tag] and session_id not in self.queued_games:
-                        new_sessions.append(session)
+                    try:
+                        session_id = session.get("gameId")
+                        if not session_id:
+                            continue
+                        
+                        is_processed = await self.bot.clan_manager.is_processed(clan_tag, session_id)
+                        if not is_processed and session_id not in self.queued_games:
+                            new_sessions.append(session)
+                    except Exception as e:
+                        print(f"Error: {e}")
 
                 if new_sessions:
-                    # Feed into the queue strictly oldest-first
                     for session in new_sessions:
-                        self.live_queue.put_nowait((clan_tag, session, is_initial_scan))
+                        # Only put the clan_tag and session in the queue
+                        self.live_queue.put_nowait((clan_tag, session))
                         self.queued_games.add(session.get("gameId"))
-                    
-                    if not is_initial_scan:
-                        print(f"Queued {len(new_sessions)} new games for clan [{clan_tag}].")
 
-    # LIVE WORKER CODE
+                    print(f"Queued {len(new_sessions)} new games for clan [{clan_tag}].")
+
     async def live_worker(self):
         await self.bot.wait_until_ready()
         async with aiohttp.ClientSession() as http_session:
             while True:
                 try:
-                    # Block until a game is added to the line
-                    clan_tag, session, is_initial_scan = await self.live_queue.get()
+                    # Unpack just the clan tag and session
+                    clan_tag, session = await self.live_queue.get()
                     session_id = session.get("gameId")
                     is_win = session.get("hasWon", False)
                     game_url = f"https://api.openfront.io/public/game/{session_id}?turns=false"
                     
-                    # STUBBORN RETRY LOOP: Forces the worker to process this exact game before moving on
                     while True:
                         try:
                             async with http_session.get(game_url, timeout=10) as game_resp:
@@ -269,44 +278,36 @@ class BackgroundLoop(commands.Cog):
                                     game_data = await game_resp.json()
                                     info = game_data.get("info", {})
                                     
-                                    # CHECK IF DATA IS READY YET.
                                     if not game_data or not info or not info.get("players"):
-                                        if not is_initial_scan:
-                                            print(f"Data for {session_id} is still empty. Retrying in 2s...")
+                                        print(f"Data for {session_id} is still empty. Retrying in 2s...")
                                         await asyncio.sleep(2) 
-                                        continue # Retry this same game
+                                        continue 
                                         
                                     all_players = info.get("players", [])
+                                    config = info.get("config", {})
+
                                     self.match_details_cache[session_id] = {
                                         "players": all_players,
                                         "start": info.get("start"),
-                                        "end": info.get("end")
+                                        "end": info.get("end"),
+                                        "maxPlayers": config.get("maxPlayers", 0),
+                                        "playerTeams": config.get("playerTeams", 0)
                                     }
 
-                                    # UPDATE GLOBAL PLAYER STATS
-                                    self.bot.player_data[clan_tag]["total_games"] += 1
-                                    self.bot.processed_games[clan_tag].append(session_id)
+                                    # Manager handles saving, stat parsing, and match logging!
+                                    await self.bot.clan_manager.process_game(clan_tag, session, info, mode="live")
 
-                                    if self.bot.player_data[clan_tag]["winstreak"] is None:
-                                        self.bot.player_data[clan_tag]["winstreak"] = 0
-                                        self.bot.player_data[clan_tag]["highest_winstreak"] = self.bot.player_data[clan_tag]["winstreak"]
-                                    else:
-                                        if is_win:
-                                            self.bot.player_data[clan_tag]["winstreak"] += 1
-                                            if self.bot.player_data[clan_tag]["winstreak"] > self.bot.player_data[clan_tag]["highest_winstreak"]:
-                                                self.bot.player_data[clan_tag]["highest_winstreak"] = self.bot.player_data[clan_tag]["winstreak"]
-                                        else:
-                                            self.bot.player_data[clan_tag]["winstreak"] = 0
+                                    game_end_ms = int(info.get("end", 0)) if info.get("end") else 0
 
-                                    # ANNOUNCE TO DISCORD
-                                    # Safely fetch the raw milliseconds timestamp of the game and the timestamp 1 hour ago
-                                    game_start_ms = int(info.get("start", 0)) if info.get("start") else 0
-                                    one_hour_ago_ms = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
-                                    
-                                    if not is_initial_scan and game_start_ms >= one_hour_ago_ms: 
-                                        for guild_id, data in list(self.bot.server_data.items()):
-                                            for tracker in data.get("trackers", []):
-                                                if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
+                                    for guild_id, data in list(self.bot.server_data.items()):
+                                        for tracker in data.get("trackers", []):
+                                            if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
+                                                
+                                                # Use the initial scan time of this specific tracker (default to 0 to be safe)
+                                                channel_scan_time = tracker.get("initial_scan_time", 0)
+                                                
+                                                # Only announce if the game happened AFTER this channel started tracking
+                                                if game_end_ms >= channel_scan_time:
                                                     channel = self.bot.get_channel(tracker["channel_id"])
                                                     if channel:
                                                         embed = await self.create_match_embed(
@@ -317,41 +318,11 @@ class BackgroundLoop(commands.Cog):
                                                         if embed:
                                                             await channel.send(embed=embed)
 
-                                    already_counted_players = set()
-                                    for p in all_players:
-                                        if p.get("clanTag", "").upper() == clan_tag.upper():
-                                            p_name = p.get("username", "Unknown")
-                                            if p_name in already_counted_players: continue
-
-                                            already_counted_players.add(p_name)
-                                            
-                                            if p_name not in self.bot.player_data[clan_tag]["players"]:
-                                                self.bot.player_data[clan_tag]["players"][p_name] = {"games_played": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0}
-                                                
-                                            p_stats = self.bot.player_data[clan_tag]["players"][p_name]
-                                            
-                                            if "winstreak" not in p_stats:
-                                                p_stats["winstreak"] = 0
-                                            if "highest_winstreak" not in p_stats:
-                                                p_stats["highest_winstreak"] = 0
-
-                                            p_stats["games_played"] += 1
-                                            if is_win:
-                                                p_stats["wins"] += 1
-                                                p_stats["winstreak"] += 1
-                                                if p_stats["winstreak"] > p_stats["highest_winstreak"]:
-                                                    p_stats["highest_winstreak"] = p_stats["winstreak"]
-                                            else:
-                                                p_stats["winstreak"] = 0
-
-                                    # Success! Clean up, Save, and break the inner loop to move on to the next game
                                     self.queued_games.discard(session_id)
-
-                                    async with self.bot.save_lock:
-                                        self.bot.save_data()
+                                    stats = await self.bot.clan_manager.get_clan_stats(clan_tag)
+                                    current_winstreak = stats.get("winstreak", 0)
                                     
-                                    if not is_initial_scan:
-                                        print(f"Successfully processed & announced {session_id} for clan [{clan_tag}]. Win: {is_win}. Current Winstreak: {self.bot.player_data[clan_tag]['winstreak']}. Games left in queue: {len(self.queued_games)}")
+                                    print(f"Successfully processed game {session_id} for clan [{clan_tag}]. Win: {is_win}. Current Winstreak: {current_winstreak}. Games left in queue: {len(self.queued_games)}")
                                     
                                     break 
 

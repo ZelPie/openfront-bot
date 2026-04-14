@@ -17,13 +17,13 @@ class StatsCmds(commands.Cog):
         tag_upper = clan_tag.upper()
         url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}"
 
-        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper) 
 
         if len(tag_upper) == 0 or len(tag_upper) > 5:
             await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
             return
         
-        await interaction.response.defer()  # Defer the response as we might take a moment to fetch data from the API
+        await interaction.response.defer() 
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -36,14 +36,15 @@ class StatsCmds(commands.Cog):
                         losses = games - wins
                         wl_ratio = data.get("weightedWLRatio", 0)
                         weighted_wins = data.get("weightedWins", 0)
-                        winstreak = self.bot.player_data.get(tag_upper, {}).get("winstreak", 0)
-                        highest_winstreak = self.bot.player_data.get(tag_upper, {}).get("highest_winstreak", 0)
+                        
+                        clan_stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
+                        winstreak = clan_stats.get("winstreak", 0)
+                        highest_winstreak = clan_stats.get("highest_winstreak", 0)
                         
                         embed = discord.Embed(title=f"Clan [{tag_upper}] Statistics", color=discord.Color.blurple())
                         embed.add_field(name="Total Matches", value=f"**{games}**", inline=True)
                         embed.add_field(name="Wins / Losses", value=f"**{wins}** / **{losses}**", inline=True)
                         embed.add_field(name="Win/Loss Ratio", value=f"**{wl_ratio:.2f}**", inline=True)
-                        # embed.add_field(name="", value="\u200b", inline=True)  # Empty field for spacing
                         embed.add_field(name="Weighted Wins", value=f"**{weighted_wins}**", inline=True)
                         embed.add_field(name="Winstreak", value=f"Current: **{winstreak}** | Highest: **{highest_winstreak}**", inline=True)
 
@@ -59,26 +60,25 @@ class StatsCmds(commands.Cog):
         tag_upper = clan_tag.upper()
         search_name = username.lower()
 
-        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper) 
 
         if len(tag_upper) == 0 or len(tag_upper) > 5:
             await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
             return
         
-        search_name = re.sub(r'[^A-Za-z0-9_ ]', '', search_name)  # Sanitize input to prevent issues
+        search_name = re.sub(r'[^A-Za-z0-9_ ]', '', search_name) 
 
         if len(search_name) == 0 or len(search_name) > 25:
             await interaction.response.send_message("Please provide a valid username (1-25 alphanumeric characters).", ephemeral=True)
             return
         
-        if tag_upper not in self.bot.player_data:
+        clan_stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
+        if not clan_stats or "players" not in clan_stats or not clan_stats["players"]:
             await interaction.response.send_message(f"We don't have any tracked data for clan **[{tag_upper}]** yet.", ephemeral=True)
             return
             
-        clan_db = self.bot.player_data[tag_upper]
         found_player_id = None
-
-        players = clan_db.get("players", {})
+        players = clan_stats.get("players", {})
         player_list = []
 
         for player in players.keys():
@@ -96,9 +96,6 @@ class StatsCmds(commands.Cog):
         if player_list and len(player_list) > 1:
             embed = discord.Embed(title=f"Multiple players found matching '{username}' in [{tag_upper}]", description="Here are all the players we found that match that name:", color=discord.Color.blue())
             multiple = True
-
-            # might not use below
-            # embed.add_field(name="Player List", value="\n".join(player_list), inline=False)
         else:
             embed = discord.Embed(title=f"Player Stats: {found_player_id}", color=discord.Color.blue())
 
@@ -108,7 +105,7 @@ class StatsCmds(commands.Cog):
             games_played = stats.get("games_played", 0)
             wins = stats.get("wins", 0)
             losses = games_played - wins
-            total_clan_games = clan_db.get("total_games", 0)
+            total_clan_games = clan_stats.get("total_games", 0)
             winstreak = stats.get("winstreak", 0)
             highest_winstreak = stats.get("highest_winstreak", 0)
             
@@ -116,7 +113,6 @@ class StatsCmds(commands.Cog):
             participation = (games_played / total_clan_games) * 100 if total_clan_games > 0 else 0.0
             
             embed.add_field(name="Player Name", value=f"**{p}**", inline=False)
-
             embed.add_field(name="Personal Win/Loss", value=f"**{wins}W** - **{losses}L**", inline=True)
             embed.add_field(name="Personal Win Rate", value=f"**{winrate:.1f}%**", inline=True)
             embed.add_field(name="Personal Winstreak", value=f"Current: **{winstreak}** | Highest: **{highest_winstreak}**", inline=False)
@@ -149,7 +145,7 @@ class StatsCmds(commands.Cog):
                         clans_list = data.get("clans", [])
                         
                         sort_choice = sort_by.value if sort_by else "default"
-                        embed_title = f"🏆 Top OpenFront Clans" # In case
+                        embed_title = f"🏆 Top OpenFront Clans" 
                         
                         if sort_choice == "wins":
                             clans_list.sort(key=lambda c: c.get("wins", 0), reverse=not reverse_sort)
@@ -161,10 +157,8 @@ class StatsCmds(commands.Cog):
                             clans_list.sort(key=lambda c: c.get("weightedWins", 0), reverse=not reverse_sort)
                             embed_title = f"🏆 Top Clans by Weighted Wins"
 
-                        # Slice to the user's requested range
                         top_clans = clans_list[lower_num - 1:]
 
-                        # 1. Define the formatting rule
                         def format_clan(rank, clan):
                             tag = clan.get("clanTag", "UNK")
                             wins = clan.get("wins", 0)
@@ -179,15 +173,13 @@ class StatsCmds(commands.Cog):
                             stat_string = f"Wins: {wins_str} (Weighted Wins: {weighted_wins_str}) \n Games: {games} \n W/L: {wl_str}"
                             return f"**#{rank}. [{tag}]**\n{stat_string}\n\n"
                             
-                        # 2. Create the Paginator
                         view = LbDisplay(
                             data=top_clans, 
                             formatter_func=format_clan, 
                             title=embed_title,
-                            items_per_page=num if num < 10 else 10,  # Show all on one page if 10 or fewer, otherwise paginate with 10 per page
+                            items_per_page=num if num < 10 else 10,
                         )
                         
-                        # 3. Send it!
                         await interaction.followup.send(embed=view.format_page(), view=view)
                     else:
                         await interaction.followup.send(f"Failed to fetch leaderboard. Status Code: {response.status}")
@@ -210,12 +202,12 @@ class StatsCmds(commands.Cog):
             await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
             return
         
-        if tag_upper not in self.bot.player_data:
+        clan_stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
+        if not clan_stats or "players" not in clan_stats or not clan_stats["players"]:
             await interaction.response.send_message(f"No tracked player data found for clan **[{tag_upper}]**.", ephemeral=True)
             return
             
-        clan_db = self.bot.player_data[tag_upper]
-        players = clan_db.get("players", {})
+        players = clan_stats.get("players", {})
 
         if sort_by == "winrate" or sort_by == "default":
             sorted_players = sorted(
@@ -246,9 +238,8 @@ class StatsCmds(commands.Cog):
             await interaction.response.send_message(f"No players are currently being tracked for clan **[{tag_upper}]**.", ephemeral=True)
             return
             
-        total_clan_games = clan_db.get('total_games', 0)
+        total_clan_games = clan_stats.get('total_games', 0)
 
-        # 1. Define the formatting rule
         def format_player(rank, item):
             p_id, stats = item
             games_played = stats.get("games_played", 0)
@@ -261,15 +252,13 @@ class StatsCmds(commands.Cog):
             
             return f"**#{rank}. {p_id}**\n- Games: {games_played}\n- Percent of Clan Games: {percent_of_clan:.1f}%\n- Win Rate: {winrate:.1f}%\n- W/L: {wins}/{losses}\n- Current Winstreak: {winstreak}\n- Highest Winstreak: {highest_winstreak}\n\n"
 
-        # 2. Create the Paginator
         view = LbDisplay(
             data=sorted_players,
             formatter_func=format_player,
             title=f"Tracked Players for [{tag_upper}]",
-            items_per_page=num if num < 10 else 10,  # Show all on one page if 10 or fewer, otherwise paginate with 10 per page
+            items_per_page=num if num < 10 else 10,
         )
         
-        # 3. Send it!
         await interaction.response.send_message(embed=view.format_page(), view=view)
     
     @app_commands.command(name="outstanding-games", description="Display the number of games that have not been processed for a specific clan.")
@@ -284,18 +273,15 @@ class StatsCmds(commands.Cog):
             await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
             return
         
-        processed_games = len(self.bot.processed_games.get(tag_upper, []))
+        processed_games = await self.bot.clan_manager.get_processed_count(tag_upper)
         
-        # Hit the sessions API to parse the "total" key attached to the games index
         url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions?limit=1"
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=10) as response:
                     if response.status == 200:
                         dat = await response.json()
-                        # Extract total based on new dictionary structure
                         total_games = int(dat.get("total", 0))
-                        
                         outstanding = total_games - processed_games
                         
                         await interaction.followup.send(f"**[{tag_upper}]** has **{outstanding}** outstanding games that have not been processed yet. (Total: {total_games}, Processed: {processed_games})")
