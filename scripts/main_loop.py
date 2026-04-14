@@ -308,12 +308,13 @@ class BackgroundLoop(commands.Cog):
                                     await self.bot.clan_manager.process_game(clan_tag, session, info, mode="live")
 
                                     game_start_ms = int(info.get("start", 0)) if info.get("start") else 0
-                                    two_hours_ago_ms = int((datetime.now(timezone.utc) - timedelta(hours=2)).timestamp() * 1000)
+                                    two_hours_ago_ms = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
 
                                     if game_start_ms >= two_hours_ago_ms: 
                                         for guild_id, data in list(self.bot.server_data.items()):
                                             for tracker in data.get("trackers", []):
-                                                if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
+                                                initial_scan_time = tracker.get("initial_scan_time", int(datetime.now(timezone.utc).timestamp() * 1000))
+                                                if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id") and game_start_ms >= initial_scan_time:
                                                     channel = self.bot.get_channel(tracker["channel_id"])
                                                     if channel:
                                                         embed = await self.create_match_embed(
