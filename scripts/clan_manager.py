@@ -31,7 +31,6 @@ class ClanDataManager:
                 "wins": 0, 
                 "winstreak": 0, 
                 "highest_winstreak": 0, 
-                "initial_scan_time": 0, 
                 "load_time_seconds": 0,
                 "players": {}
             },

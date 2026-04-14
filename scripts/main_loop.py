@@ -202,22 +202,14 @@ class BackgroundLoop(commands.Cog):
                 if tracker.get("clan_tag"):
                     unique_clans.add(tracker["clan_tag"])
         
-        two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
-        iso_timestamp = two_hours_ago.strftime('%Y-%m-%dT%H:%M:%SZ')
+        # Pull strictly 1 hour of history for every clan, regardless of channel trackers
+        one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+        iso_timestamp = one_hour_ago.strftime('%Y-%m-%dT%H:%M:%SZ')
 
         print(f"Checking for new games for {len(unique_clans) if unique_clans else 'no'} clans. . .")
         
         async with aiohttp.ClientSession() as http_session:
             for clan_tag in unique_clans:
-                
-                stats = await self.bot.clan_manager.get_clan_stats(clan_tag)
-                if not stats.get("initial_scan_time"):
-                    now = datetime.now(timezone.utc)
-                    stats["initial_scan_time"] = int(now.timestamp() * 1000)
-                    await self.bot.clan_manager.save_clan(clan_tag)
-                    
-                initial_scan_time = stats["initial_scan_time"]
-
                 sessions = []
                 page = 1
                 try:
@@ -251,21 +243,19 @@ class BackgroundLoop(commands.Cog):
                 for session in sessions:
                     try:
                         session_id = session.get("gameId")
-                        iso = session.get("gameStart")
-                        if not iso:
+                        if not session_id:
                             continue
-                        game_start_ms = datetime.fromisoformat(iso.replace('Z', '+00:00')).timestamp() * 1000
                         
                         is_processed = await self.bot.clan_manager.is_processed(clan_tag, session_id)
-                        if session_id and not is_processed and session_id not in self.queued_games:
-                            if initial_scan_time < game_start_ms:
-                                new_sessions.append(session)
+                        if not is_processed and session_id not in self.queued_games:
+                            new_sessions.append(session)
                     except Exception as e:
                         print(f"Error: {e}")
 
                 if new_sessions:
                     for session in new_sessions:
-                        self.live_queue.put_nowait((clan_tag, session, initial_scan_time))
+                        # Only put the clan_tag and session in the queue
+                        self.live_queue.put_nowait((clan_tag, session))
                         self.queued_games.add(session.get("gameId"))
 
                     print(f"Queued {len(new_sessions)} new games for clan [{clan_tag}].")
@@ -275,7 +265,8 @@ class BackgroundLoop(commands.Cog):
         async with aiohttp.ClientSession() as http_session:
             while True:
                 try:
-                    clan_tag, session, initial_scan_time = await self.live_queue.get()
+                    # Unpack just the clan tag and session
+                    clan_tag, session = await self.live_queue.get()
                     session_id = session.get("gameId")
                     is_win = session.get("hasWon", False)
                     game_url = f"https://api.openfront.io/public/game/{session_id}?turns=false"
@@ -288,8 +279,7 @@ class BackgroundLoop(commands.Cog):
                                     info = game_data.get("info", {})
                                     
                                     if not game_data or not info or not info.get("players"):
-                                        if not initial_scan_time:
-                                            print(f"Data for {session_id} is still empty. Retrying in 2s...")
+                                        print(f"Data for {session_id} is still empty. Retrying in 2s...")
                                         await asyncio.sleep(2) 
                                         continue 
                                         
@@ -307,14 +297,17 @@ class BackgroundLoop(commands.Cog):
                                     # Manager handles saving, stat parsing, and match logging!
                                     await self.bot.clan_manager.process_game(clan_tag, session, info, mode="live")
 
-                                    game_start_ms = int(info.get("start", 0)) if info.get("start") else 0
-                                    two_hours_ago_ms = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
+                                    game_end_ms = int(info.get("end", 0)) if info.get("end") else 0
 
-                                    if game_start_ms >= two_hours_ago_ms: 
-                                        for guild_id, data in list(self.bot.server_data.items()):
-                                            for tracker in data.get("trackers", []):
-                                                initial_scan_time = tracker.get("initial_scan_time", int(datetime.now(timezone.utc).timestamp() * 1000))
-                                                if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id") and game_start_ms >= initial_scan_time:
+                                    for guild_id, data in list(self.bot.server_data.items()):
+                                        for tracker in data.get("trackers", []):
+                                            if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
+                                                
+                                                # Use the initial scan time of this specific tracker (default to 0 to be safe)
+                                                channel_scan_time = tracker.get("initial_scan_time", 0)
+                                                
+                                                # Only announce if the game happened AFTER this channel started tracking
+                                                if game_end_ms >= channel_scan_time:
                                                     channel = self.bot.get_channel(tracker["channel_id"])
                                                     if channel:
                                                         embed = await self.create_match_embed(
@@ -329,7 +322,7 @@ class BackgroundLoop(commands.Cog):
                                     stats = await self.bot.clan_manager.get_clan_stats(clan_tag)
                                     current_winstreak = stats.get("winstreak", 0)
                                     
-                                    print(f"Successfully processed & announced {session_id} for clan [{clan_tag}]. Win: {is_win}. Current Winstreak: {current_winstreak}. Games left in queue: {len(self.queued_games)}")
+                                    print(f"Successfully processed game {session_id} for clan [{clan_tag}]. Win: {is_win}. Current Winstreak: {current_winstreak}. Games left in queue: {len(self.queued_games)}")
                                     
                                     break 
 
