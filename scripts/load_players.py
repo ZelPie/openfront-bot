@@ -11,15 +11,11 @@ import os
 from .fetch_worker import fetch_game_worker
 
 load_dotenv()
-
 dev_server_id = int(os.getenv('DEV_SERVER_ID', '0'))
 
 class LoadPlayers(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        
-        if not hasattr(self.bot, 'save_lock'):
-            self.bot.save_lock = asyncio.Lock()
             
         if not hasattr(self.bot, 'is_swarm_active'):
             self.bot.is_swarm_active = False
@@ -85,17 +81,6 @@ class LoadPlayers(commands.Cog):
         
         base_url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions"
 
-        if tag_upper not in self.bot.player_data:
-            self.bot.player_data[tag_upper] = {"total_games": 0, "players": {}}
-        elif "total_games" not in self.bot.player_data[tag_upper]:
-            self.bot.player_data[tag_upper]["total_games"] = 0
-            
-        if "load_time_seconds" not in self.bot.player_data[tag_upper]:
-            self.bot.player_data[tag_upper]["load_time_seconds"] = 0
-            
-        if tag_upper not in self.bot.processed_games:
-            self.bot.processed_games[tag_upper] = []
-
         try:
             async with aiohttp.ClientSession() as session:
                 games_to_process = []
@@ -111,11 +96,11 @@ class LoadPlayers(commands.Cog):
                     total_games = int(data.get("total", 0))
                     print(f"[{tag_upper}] Total games according to API: {total_games}")
 
-                # --- PAGING PHASE ---
+                processed_count_db = await self.bot.clan_manager.get_processed_count(tag_upper)
+
                 if total_games <= 10000:
-                    # STRATEGY A: Fast Standard Pagination (No Time Chunking)
                     page = 1
-                    while len(seen_game_ids) + len(self.bot.processed_games[tag_upper]) < total_games:
+                    while len(seen_game_ids) + processed_count_db < total_games:
                         if self.cancel_event.is_set():
                             await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
                             return
@@ -139,7 +124,8 @@ class LoadPlayers(commands.Cog):
                                     continue
                                     
                                 seen_game_ids.add(gid)
-                                if gid in self.bot.processed_games[tag_upper]:
+                                is_processed = await self.bot.clan_manager.is_processed(tag_upper, gid)
+                                if is_processed:
                                     consecutive_processed_count += 1
                                     continue
                                         
@@ -152,12 +138,11 @@ class LoadPlayers(commands.Cog):
                         page += 1
                         await asyncio.sleep(0.3)
                 else:
-                    # STRATEGY B: Time-Chunked Pagination for > 10,000 Games
                     cutoff_date = datetime(2025, 11, 10, tzinfo=timezone.utc)
                     current_end = datetime.now(timezone.utc)
                     current_start = current_end - timedelta(days=3)
                     
-                    while len(seen_game_ids) + len(self.bot.processed_games[tag_upper]) < total_games:
+                    while len(seen_game_ids) + processed_count_db < total_games:
                         if self.cancel_event.is_set():
                             await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
                             return
@@ -189,7 +174,8 @@ class LoadPlayers(commands.Cog):
                                         continue
                                         
                                     seen_game_ids.add(gid)
-                                    if gid in self.bot.processed_games[tag_upper]:
+                                    is_processed = await self.bot.clan_manager.is_processed(tag_upper, gid)
+                                    if is_processed:
                                         consecutive_processed_count += 1
                                         continue
                                         
@@ -202,7 +188,6 @@ class LoadPlayers(commands.Cog):
                         if consecutive_processed_count >= 2000:
                             break
                             
-                        # Slide window back 3 days
                         current_end = current_start
                         current_start = current_start - timedelta(days=3)
 
@@ -220,19 +205,14 @@ class LoadPlayers(commands.Cog):
                     try:
                         while True:
                             await asyncio.sleep(1)
-                            self.bot.player_data[tag_upper]["load_time_seconds"] += 1
+                            stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
+                            stats["load_time_seconds"] = stats.get("load_time_seconds", 0) + 1
                     except asyncio.CancelledError:
                         pass
                 
                 timer_task = asyncio.create_task(timer())
 
                 processed_count = [0]
-                new_players = [0]
-
-                if "winstreak" not in self.bot.player_data[tag_upper]:
-                    self.bot.player_data[tag_upper]["winstreak"] = 0
-                if "highest_winstreak" not in self.bot.player_data[tag_upper]:
-                    self.bot.player_data[tag_upper]["highest_winstreak"] = 0
 
                 self.current_queue = asyncio.Queue()
                 for game in games_to_process:
@@ -240,29 +220,16 @@ class LoadPlayers(commands.Cog):
 
                 downloaded_games = {}
 
-                # Create tasks using the imported shared worker
                 workers_list = [
                     asyncio.create_task(fetch_game_worker(i, session, self.current_queue, self.cancel_event, downloaded_games)) 
                     for i in range(3)
                 ]
-                
-                async def auto_saver():
-                    try:
-                        while True:
-                            await asyncio.sleep(60)
-                            async with self.bot.save_lock:
-                                self.bot.save_data()
-                    except asyncio.CancelledError:
-                        pass
-
-                saver_task = asyncio.create_task(auto_saver())
                 
                 for game in games_to_process:
                     if self.cancel_event.is_set():
                         break
                         
                     gid = game.get("gameId")
-                    fallback_win = game.get("hasWon", False)
                     
                     while gid not in downloaded_games:
                         if self.cancel_event.is_set():
@@ -276,80 +243,37 @@ class LoadPlayers(commands.Cog):
                     
                     if g_data:
                         info = g_data.get("info", {})
-                        is_win = g_data.get("hasWon", fallback_win)
+                        success = await self.bot.clan_manager.process_game(tag_upper, game, info, mode="backfill")
                         
-                        if is_win:
-                            self.bot.player_data[tag_upper]["winstreak"] += 1
-                            if self.bot.player_data[tag_upper]["winstreak"] > self.bot.player_data[tag_upper]["highest_winstreak"]:
-                                self.bot.player_data[tag_upper]["highest_winstreak"] = self.bot.player_data[tag_upper]["winstreak"]
-                        else:
-                            self.bot.player_data[tag_upper]["winstreak"] = 0
-
-                        players = info.get("players", [])
-                        counted_here = set()
-                        for p in players:
-                            if p.get("clanTag", "").upper() == tag_upper:
-                                name = p.get("username", "Unknown")
-                                if name in counted_here: continue
-                                counted_here.add(name)
-
-                                if name not in self.bot.player_data[tag_upper]["players"]:
-                                    self.bot.player_data[tag_upper]["players"][name] = {
-                                        "name": [name], "games_played": 0, "wins": 0, 
-                                        "winstreak": 0, "highest_winstreak": 0
-                                    }
-                                    new_players[0] += 1
-                                
-                                stats = self.bot.player_data[tag_upper]["players"][name]
-                                
-                                if "winstreak" not in stats: stats["winstreak"] = 0
-                                if "highest_winstreak" not in stats: stats["highest_winstreak"] = 0
-                                    
-                                stats["games_played"] += 1
-                                if is_win: 
-                                    stats["wins"] += 1
-                                    stats["winstreak"] += 1
-                                    if stats["winstreak"] > stats["highest_winstreak"]:
-                                        stats["highest_winstreak"] = stats["winstreak"]
-                                else:
-                                    stats["winstreak"] = 0
-                                    
-                                stats["winrate"] = round((stats["wins"] / stats["games_played"]) * 100, 2)
-
-                        processed_count[0] += 1
-                        self.bot.player_data[tag_upper]["total_games"] += 1
-                        self.bot.processed_games[tag_upper].append(gid)
-                        
-                    if processed_count[0] % 50 == 0 and processed_count[0] > 0:
-                        print(f"[{tag_upper}] Backfill progress: {processed_count[0]} / {total_to_do}...")
+                        if success:
+                            processed_count[0] += 1
                             
-                        await asyncio.sleep(0.9)
+                        if processed_count[0] % 50 == 0 and processed_count[0] > 0:
+                            print(f"[{tag_upper}] Backfill progress: {processed_count[0]} / {total_to_do}...")
+                            await asyncio.sleep(0.9)
 
                 await self.current_queue.join()
                 
-                saver_task.cancel()
                 timer_task.cancel()
                 for w in workers_list:
                     w.cancel()
                 
-                total_secs = self.bot.player_data[tag_upper].get("load_time_seconds", 0)
+                final_stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
+                total_secs = final_stats.get("load_time_seconds", 0)
                 m, s = divmod(total_secs, 60)
                 h, m = divmod(m, 60)
                 formatted_time = f"{h:03d}:{m:02d}:{s:02d}"
 
-                async with self.bot.save_lock:
-                    self.bot.save_data()
-                
                 if self.cancel_event.is_set():
                     await channel.send(
                         f"**[{tag_upper}]** Background load CANCELLED!\n"
-                        f"Saved **{processed_count[0]}** new games and **{new_players[0]}** new players.\n"
+                        f"Saved **{processed_count[0]}** new games.\n"
                         f"⏱ **Time Spent:** `{formatted_time}`"
                     )
                 else:
                     await channel.send(
                         f"**[{tag_upper}]** Background load complete! Every game was successfully found and processed.\n"
-                        f"Added **{processed_count[0]}** games and **{new_players[0]}** new players.\n"
+                        f"Added **{processed_count[0]}** games.\n"
                         f"⏱ **Total Time Taken:** `{formatted_time}`"
                     )
 

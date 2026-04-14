@@ -26,7 +26,15 @@ class ClanDataManager:
             
         paths = self._get_paths(tag)
         clan_data = {
-            "stats": {"total_games": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0, "players": {}},
+            "stats": {
+                "total_games": 0, 
+                "wins": 0, 
+                "winstreak": 0, 
+                "highest_winstreak": 0, 
+                "initial_scan_time": 0, 
+                "load_time_seconds": 0,
+                "players": {}
+            },
             "processed": [],
             "matches": []
         }
@@ -35,9 +43,18 @@ class ClanDataManager:
             if os.path.exists(path):
                 try:
                     with open(path, "r") as f:
-                        clan_data[key] = json.load(f)
+                        loaded = json.load(f)
+                        if key == "stats":
+                            clan_data[key].update(loaded)
+                        elif key == "processed":
+                            clan_data[key] = set(loaded)
+                        else:
+                            clan_data[key] = loaded
                 except Exception as e:
                     print(f"Error loading {path}: {e}")
+        
+        if isinstance(clan_data["processed"], list):
+            clan_data["processed"] = set(clan_data["processed"])
                     
         self.clans[tag] = clan_data
 
@@ -51,21 +68,32 @@ class ClanDataManager:
         async with self.lock:
             for key, path in paths.items():
                 temp_path = f"{path}.tmp"
-                # Write to temp file first
                 with open(temp_path, "w") as f:
-                    json.dump(self.clans[tag][key], f, indent=4)
-                # Safely overwrite the real file
+                    to_save = list(self.clans[tag][key]) if key == "processed" else self.clans[tag][key]
+                    json.dump(to_save, f, indent=4)
                 os.replace(temp_path, path)
 
     async def is_processed(self, clan_tag, game_id):
         await self.load_clan(clan_tag)
         return game_id in self.clans[clan_tag.upper()]["processed"]
 
+    async def get_processed_count(self, clan_tag):
+        await self.load_clan(clan_tag)
+        return len(self.clans[clan_tag.upper()]["processed"])
+
+    async def get_clan_stats(self, clan_tag):
+        await self.load_clan(clan_tag)
+        return self.clans[clan_tag.upper()]["stats"]
+
     async def reset_clan_stats(self, clan_tag):
         tag = clan_tag.upper()
         await self.load_clan(tag)
         async with self.lock:
-            self.clans[tag]["stats"] = {"total_games": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0, "players": {}}
+            self.clans[tag]["stats"] = {
+                "total_games": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0, 
+                "players": {}, "initial_scan_time": self.clans[tag]["stats"].get("initial_scan_time", 0), 
+                "load_time_seconds": self.clans[tag]["stats"].get("load_time_seconds", 0)
+            }
             self.clans[tag]["processed"] = []
             self.clans[tag]["matches"] = []
         await self.save_clan(tag)
@@ -103,18 +131,11 @@ class ClanDataManager:
                 "gameId": game_id, 
                 "start": info_data.get("start"), 
                 "end": info_data.get("end"),
-                "hasWon": is_win, 
-                "score": score, 
-                "gamemode": gamemode,
-                "totalPlayersInMatch": len(all_players),
-                "totalPlayersInClan": len(clan_players),
-                "playerCount": len(all_players),
-                "maxPlayers": max_players,
-                "maxTeams": player_teams,
-                "clanPlayers": clan_players
+                "hasWon": is_win, "score": score, "gamemode": gamemode,
+                "totalPlayersInMatch": len(all_players), "clanPlayers": clan_players
             }
             self.clans[tag]["matches"].append(match_record)
-            self.clans[tag]["processed"].append(game_id)
+            self.clans[tag]["processed"].add(game_id)
 
             stats = self.clans[tag]["stats"]
             stats["total_games"] = stats.get("total_games", 0) + 1
@@ -132,12 +153,7 @@ class ClanDataManager:
                 counted.add(p_name)
                 
                 if p_name not in stats["players"]:
-                    stats["players"][p_name] = {
-                        "games_played": 0, 
-                        "wins": 0, 
-                        "winstreak": 0, 
-                        "highest_winstreak": 0
-                    }
+                    stats["players"][p_name] = {"games_played": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0}
                     
                 p_stats = stats["players"][p_name]
                 p_stats["games_played"] += 1
@@ -151,6 +167,5 @@ class ClanDataManager:
                     
                 p_stats["winrate"] = round((p_stats["wins"] / p_stats["games_played"]) * 100, 2)
                 
-        # Saves atomically after EVERY game processed
         await self.save_clan(tag)
         return True

@@ -16,9 +16,6 @@ dev_server_id = int(os.getenv('DEV_SERVER_ID', '0'))
 class WinstreakCmds(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        
-        if not hasattr(self.bot, 'save_lock'):
-            self.bot.save_lock = asyncio.Lock()
             
         if not hasattr(self.bot, 'is_swarm_active'):
             self.bot.is_swarm_active = False
@@ -86,16 +83,6 @@ class WinstreakCmds(commands.Cog):
         all_games = []
         seen_game_ids = set()
 
-        if tag_upper not in self.bot.player_data:
-            self.bot.player_data[tag_upper] = {"total_games": 0, "winstreak": 0, "highest_winstreak": 0, "players": {}, "load_time_seconds": 0}
-        if "load_time_seconds" not in self.bot.player_data[tag_upper]:
-            self.bot.player_data[tag_upper]["load_time_seconds"] = 0
-            
-        if not hasattr(self.bot, 'processed_games'):
-            self.bot.processed_games = {}
-        if tag_upper not in self.bot.processed_games:
-            self.bot.processed_games[tag_upper] = []
-
         try:
             async with aiohttp.ClientSession() as session:
                 total_games = 0
@@ -107,7 +94,6 @@ class WinstreakCmds(commands.Cog):
 
                 await channel.send(f"Paging backward to collect all `{total_games}` games...")
                 
-                # --- MATCHING PAGING LOGIC ---
                 if total_games <= 10000:
                     page = 1
                     while len(seen_game_ids) < total_games:
@@ -132,9 +118,6 @@ class WinstreakCmds(commands.Cog):
                                 if gid and gid not in seen_game_ids:
                                     seen_game_ids.add(gid)
                                     all_games.append(game)
-                                    
-                                    if gid not in self.bot.processed_games[tag_upper]:
-                                        self.bot.processed_games[tag_upper].append(gid)
                                         
                         page += 1
                         await asyncio.sleep(0.2) 
@@ -172,9 +155,6 @@ class WinstreakCmds(commands.Cog):
                                     if gid and gid not in seen_game_ids:
                                         seen_game_ids.add(gid)
                                         all_games.append(game)
-                                        
-                                        if gid not in self.bot.processed_games[tag_upper]:
-                                            self.bot.processed_games[tag_upper].append(gid)
                                             
                             page += 1
                             await asyncio.sleep(0.2) 
@@ -201,28 +181,26 @@ class WinstreakCmds(commands.Cog):
                     try:
                         while True:
                             await asyncio.sleep(1)
-                            self.bot.player_data[tag_upper]["load_time_seconds"] += 1
+                            stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
+                            stats["load_time_seconds"] = stats.get("load_time_seconds", 0) + 1
                     except asyncio.CancelledError:
                         pass
                 
                 timer_task = asyncio.create_task(timer())
 
-                # Use the imported shared worker
                 workers_list = [
                     asyncio.create_task(fetch_game_worker(i, session, self.current_queue, self.cancel_event, downloaded_games)) 
                     for i in range(3)
                 ]
                 
-                temp_clan_winstreak = 0
-                temp_clan_highest = 0
-                temp_players = {}
+                # WIPE OLD DATA
+                await self.bot.clan_manager.reset_clan_stats(tag_upper)
 
                 processed_count = 0
                 for game in all_games:
                     if self.cancel_event.is_set():
                         break
                     gid = game.get("gameId")
-                    fallback_win = game.get("hasWon", False)
                     
                     while gid not in downloaded_games:
                         if self.cancel_event.is_set():
@@ -235,40 +213,8 @@ class WinstreakCmds(commands.Cog):
                     g_data = downloaded_games.pop(gid)
                     if g_data:
                         info = g_data.get("info", {})
-                        is_win = g_data.get("hasWon", fallback_win)
                         
-                        if is_win:
-                            temp_clan_winstreak += 1
-                            if temp_clan_winstreak > temp_clan_highest:
-                                temp_clan_highest = temp_clan_winstreak
-                        else:
-                            temp_clan_winstreak = 0
-
-                        players = info.get("players", [])
-                        counted_here = set()
-                        for p in players:
-                            if p.get("clanTag", "").upper() == tag_upper:
-                                
-                                # FIX: Do not strip out the clan tags. Keep them exactly as load_players does.
-                                db_username = p.get("username", "Unknown")
-                                
-                                if db_username in counted_here: continue
-                                counted_here.add(db_username)
-
-                                if db_username not in temp_players:
-                                    temp_players[db_username] = {"games_played": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0}
-                                
-                                stats = temp_players[db_username]
-                                
-                                stats["games_played"] += 1
-                                if is_win: 
-                                    stats["wins"] += 1
-                                    stats["winstreak"] += 1
-                                    if stats["winstreak"] > stats["highest_winstreak"]:
-                                        stats["highest_winstreak"] = stats["winstreak"]
-                                else:
-                                    stats["winstreak"] = 0
-                                    
+                        await self.bot.clan_manager.process_game(tag_upper, game, info, mode="recheck")
                         processed_count += 1
                         
                     if processed_count % 50 == 0 and processed_count > 0:
@@ -281,29 +227,13 @@ class WinstreakCmds(commands.Cog):
                 if timer_task:
                     timer_task.cancel()
 
+                final_stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
+                player_count = len(final_stats.get("players", {}))
+
                 if self.cancel_event.is_set():
-                    await channel.send(f"**[{tag_upper}]** Winstreak recheck CANCELLED at {processed_count}/{total_to_do} games. No data was modified.")
+                    await channel.send(f"**[{tag_upper}]** Winstreak recheck CANCELLED at {processed_count}/{total_to_do} games.")
                 else:
-                    if tag_upper not in self.bot.player_data:
-                        self.bot.player_data[tag_upper] = {"total_games": 0, "players": {}}
-                    
-                    self.bot.player_data[tag_upper]["winstreak"] = temp_clan_winstreak
-                    self.bot.player_data[tag_upper]["highest_winstreak"] = temp_clan_highest
-                    
-                    for p_name, p_stats in temp_players.items():
-                        if p_name not in self.bot.player_data[tag_upper]["players"]:
-                            self.bot.player_data[tag_upper]["players"][p_name] = {"name": [p_name], "games_played": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0}
-                            
-                        self.bot.player_data[tag_upper]["players"][p_name]["games_played"] = p_stats["games_played"]
-                        self.bot.player_data[tag_upper]["players"][p_name]["wins"] = p_stats["wins"]
-                        self.bot.player_data[tag_upper]["players"][p_name]["winstreak"] = p_stats["winstreak"]
-                        self.bot.player_data[tag_upper]["players"][p_name]["highest_winstreak"] = p_stats["highest_winstreak"]
-                        self.bot.player_data[tag_upper]["players"][p_name]["winrate"] = round((p_stats["wins"] / p_stats["games_played"]) * 100, 2) if p_stats["games_played"] > 0 else 0.0
-
-                    async with self.bot.save_lock:
-                        self.bot.save_data()
-
-                    total_time = self.bot.player_data[tag_upper].get("load_time_seconds", 0)
+                    total_time = final_stats.get("load_time_seconds", 0)
                     m, s = divmod(total_time, 60)
                     h, m = divmod(m, 60)
                     if h > 0:
@@ -313,7 +243,7 @@ class WinstreakCmds(commands.Cog):
                     else:
                         time_str = f"{s}s"
 
-                    await channel.send(f"**[{tag_upper}]** Winstreak recheck complete in **{time_str}**! Successfully re-evaluated and updated winstreaks for **{len(temp_players)}** players over **{processed_count}** games.")
+                    await channel.send(f"**[{tag_upper}]** Winstreak recheck complete in **{time_str}**! Successfully re-evaluated and updated winstreaks for **{player_count}** players over **{processed_count}** games.")
 
         except Exception as e:
             await channel.send(f"An error occurred during recheck: {e}")
@@ -321,9 +251,6 @@ class WinstreakCmds(commands.Cog):
             self.bot.is_swarm_active = False
             if timer_task and not timer_task.done():
                 timer_task.cancel()
-
-    # NOTE: The rest of the WinstreakCmds class (e.g. alltime_winstreak) goes here...
-    # (Left unchanged for brevity, make sure to keep your existing alltime_winstreak method)
 
 async def setup(bot):
     await bot.add_cog(WinstreakCmds(bot))
