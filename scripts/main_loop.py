@@ -5,6 +5,8 @@ import aiohttp
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+from math import ceil
+
 class BackgroundLoop(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -161,6 +163,8 @@ class BackgroundLoop(commands.Cog):
         else:
             embed.set_footer(text=f"Match ID: {session_id}")
 
+        print(f"Successfully processed and embedded game {session_id} for clan [{clan_tag}]. Win: {is_win}. Games left in queue: {len(self.queued_games)}")
+
         return embed
 
     @app_commands.command(name="test", description="Test the embed output using the latest game from clan UN.")
@@ -227,7 +231,7 @@ class BackgroundLoop(commands.Cog):
                             if not results or results == []:
                                 break
                                
-                            num_pages = int(api_data.get("total", 1)) // LIMIT
+                            num_pages = int(ceil(int(api_data.get("total", 1)) / LIMIT))
 
                             sessions.extend(results)
                             page += 1
@@ -321,12 +325,12 @@ class BackgroundLoop(commands.Cog):
                                                         )
                                                         if embed:
                                                             await channel.send(embed=embed)
+                                                        else:
+                                                            print(f"Successfully processed game {session_id} for clan [{clan_tag}]. Win: {is_win}. Games left in queue: {len(self.queued_games)}")
 
                                     self.queued_games.discard(session_id)
                                     stats = await self.bot.clan_manager.get_clan_stats(clan_tag)
                                     current_winstreak = stats.get("winstreak", 0)
-                                    
-                                    print(f"Successfully processed game {session_id} for clan [{clan_tag}]. Win: {is_win}. Current Winstreak: {current_winstreak}. Games left in queue: {len(self.queued_games)}")
                                     
                                     break 
 
