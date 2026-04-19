@@ -64,13 +64,18 @@ class ClanDataManager:
             return
             
         paths = self._get_paths(tag)
-        async with self.lock:
+
+        def _write_files():
             for key, path in paths.items():
                 temp_path = f"{path}.tmp"
                 with open(temp_path, "w") as f:
                     to_save = list(self.clans[tag][key]) if key == "processed" else self.clans[tag][key]
                     json.dump(to_save, f, indent=4)
                 os.replace(temp_path, path)
+
+
+        async with self.lock:
+            await asyncio.to_thread(_write_files)
 
     async def is_processed(self, clan_tag, game_id):
         await self.load_clan(clan_tag)

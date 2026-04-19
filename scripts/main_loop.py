@@ -205,6 +205,7 @@ class BackgroundLoop(commands.Cog):
         # Pull strictly 1 hour of history for every clan, regardless of channel trackers
         one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
         iso_timestamp = one_hour_ago.strftime('%Y-%m-%dT%H:%M:%SZ')
+        LIMIT = 50
 
         print(f"Checking for new games for {len(unique_clans) if unique_clans else 'no'} clans. . .")
         
@@ -212,9 +213,10 @@ class BackgroundLoop(commands.Cog):
             for clan_tag in unique_clans:
                 sessions = []
                 page = 1
+                num_pages = 1
                 try:
-                    while True:
-                        api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions?start={iso_timestamp}&page={page}&limit=50"
+                    while page <= num_pages:
+                        api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions?start={iso_timestamp}&page={page}&limit={LIMIT}"
                         async with http_session.get(api_url, timeout=10) as response:
                             if response.status != 200:
                                 break
@@ -222,9 +224,11 @@ class BackgroundLoop(commands.Cog):
                             api_data = await response.json()
                             results = api_data.get("results", [])
                             
-                            if not results:
+                            if not results or results == []:
                                 break
-                                
+                               
+                            num_pages = int(api_data.get("total", 1)) // LIMIT
+
                             sessions.extend(results)
                             page += 1
                 except Exception as e:
