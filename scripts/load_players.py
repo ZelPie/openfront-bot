@@ -10,6 +10,8 @@ import os
 
 from .fetch_worker import fetch_game_worker
 
+from math import ceil
+
 load_dotenv()
 dev_server_id = int(os.getenv('DEV_SERVER_ID', '0'))
 
@@ -69,8 +71,6 @@ class LoadPlayers(commands.Cog):
         if num <= 0:
             await interaction.response.send_message("Please provide a positive number.", ephemeral=True)
             return
-        
-        
 
         if len(tag_upper) == 0 or len(tag_upper) > 5:
             await interaction.response.send_message("Please provide a valid clan tag.", ephemeral=True)
@@ -79,7 +79,7 @@ class LoadPlayers(commands.Cog):
         await interaction.response.send_message(f"Paging backward through history for [{tag_upper}] to build the queue...")
         
         self.bot.is_swarm_active = True
-        self.bot.loop.create_task(self.background_loader(tag_upper, interaction.channel), num)
+        self.bot.loop.create_task(self.background_loader(tag_upper, interaction.channel, num))
 
     async def background_loader(self, tag_upper, channel, num):
         self.cancel_event.clear()
@@ -106,9 +106,11 @@ class LoadPlayers(commands.Cog):
 
                 LIMIT = 50
 
+                num_pages = int(ceil(total_games / LIMIT))
+
                 if total_games <= 10000:
                     page = 1
-                    while len(seen_game_ids) + processed_count_db < total_games:
+                    while len(seen_game_ids) + processed_count_db < total_games and page <= num_pages:
                         if self.cancel_event.is_set():
                             await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
                             return

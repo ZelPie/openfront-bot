@@ -221,5 +221,3 @@ class ClanDataManager:
             
         # 4. Save the sorted matches and updated stats
         await self.save_clan(tag)
-
-        print("Saving data...")
