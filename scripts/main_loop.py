@@ -163,7 +163,7 @@ class BackgroundLoop(commands.Cog):
         else:
             embed.set_footer(text=f"Match ID: {session_id}")
 
-        print(f"Successfully processed and embedded game {session_id} for clan [{clan_tag}]. Win: {is_win}. Games left in queue: {len(self.queued_games)}")
+        print(f"Successfully processed and embedded game {session_id} for clan [{clan_tag}]. Win: {is_win}. Games left in queue: {len(self.queued_games) - 1}")
 
         return embed
 
@@ -302,7 +302,7 @@ class BackgroundLoop(commands.Cog):
                                         "playerTeams": config.get("playerTeams", 0)
                                     }
 
-                                    # Manager handles saving, stat parsing, and match logging!
+                                    # Manager handles saving, stat parsing, and match logging
                                     await self.bot.clan_manager.process_game(clan_tag, session, info, mode="live")
 
                                     game_end_ms = int(info.get("end", 0)) if info.get("end") else 0
@@ -311,7 +311,7 @@ class BackgroundLoop(commands.Cog):
                                         for tracker in data.get("trackers", []):
                                             if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
                                                 
-                                                # Use the initial scan time of this specific tracker (default to 0 to be safe)
+                                                # Use the initial scan time of this specific tracker
                                                 channel_scan_time = tracker.get("initial_scan_time", 0)
                                                 
                                                 # Only announce if the game happened AFTER this channel started tracking
@@ -326,11 +326,12 @@ class BackgroundLoop(commands.Cog):
                                                         if embed:
                                                             await channel.send(embed=embed)
                                                         else:
-                                                            print(f"Successfully processed game {session_id} for clan [{clan_tag}]. Win: {is_win}. Games left in queue: {len(self.queued_games)}")
+                                                            print(f"Successfully processed game {session_id} for clan [{clan_tag}]. Win: {is_win}. Games left in queue: {len(self.queued_games) - 1}")
+                                                else:
+                                                    print(f"Successfully processed game {session_id} for clan [{clan_tag}]. Win: {is_win}. Games left in queue: {len(self.queued_games) - 1}")
 
                                     self.queued_games.discard(session_id)
                                     stats = await self.bot.clan_manager.get_clan_stats(clan_tag)
-                                    current_winstreak = stats.get("winstreak", 0)
                                     
                                     break 
 
@@ -346,7 +347,12 @@ class BackgroundLoop(commands.Cog):
                             await asyncio.sleep(3)
                             
                     self.live_queue.task_done()
-                    await asyncio.sleep(0.3) 
+                
+                    if self.live_queue.empty():
+                        print(f"Queue done.")
+                        await self.bot.clan_manager.finalize_batch_update(clan_tag)
+
+                    await asyncio.sleep(0.1) 
                     
                 except Exception as e:
                     print(f"Live Queue Critical Error: {e}")

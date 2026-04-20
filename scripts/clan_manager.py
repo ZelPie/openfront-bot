@@ -75,6 +75,7 @@ class ClanDataManager:
 
 
         async with self.lock:
+            print("Saving clan files.")
             await asyncio.to_thread(_write_files)
 
     async def is_processed(self, clan_tag, game_id):
@@ -173,3 +174,53 @@ class ClanDataManager:
                 
         await self.save_clan(tag)
         return True
+    
+    async def finalize_batch_update(self, clan_tag):
+        tag = clan_tag.upper()
+        await self.load_clan(tag)
+        
+        async with self.lock:
+            # 1. Sort matches chronologically by start time
+            self.clans[tag]["matches"].sort(key=lambda x: x.get("start", 0))
+            
+            # 2. Reset stats to recalculate from the sorted match history
+            stats = {
+                "total_games": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0, 
+                "players": {}, "load_time_seconds": self.clans[tag]["stats"].get("load_time_seconds", 0)
+            }
+            
+            # 3. Re-process every match in the now-sorted list
+            for match in self.clans[tag]["matches"]:
+                is_win = match.get("hasWon", False)
+                stats["total_games"] += 1
+                
+                if is_win:
+                    stats["wins"] += 1
+                    stats["winstreak"] += 1
+                    if stats["winstreak"] > stats["highest_winstreak"]:
+                        stats["highest_winstreak"] = stats["winstreak"]
+                else:
+                    stats["winstreak"] = 0
+                    
+                for p_name in match.get("clanPlayers", []):
+                    if p_name not in stats["players"]:
+                        stats["players"][p_name] = {"games_played": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0}
+                    
+                    p_stats = stats["players"][p_name]
+                    p_stats["games_played"] += 1
+                    if is_win:
+                        p_stats["wins"] += 1
+                        p_stats["winstreak"] += 1
+                        if p_stats["winstreak"] > p_stats["highest_winstreak"]:
+                            p_stats["highest_winstreak"] = p_stats["winstreak"]
+                    else:
+                        p_stats["winstreak"] = 0
+                    
+                    p_stats["winrate"] = round((p_stats["wins"] / p_stats["games_played"]) * 100, 2)
+
+            self.clans[tag]["stats"] = stats
+            
+        # 4. Save the sorted matches and updated stats
+        await self.save_clan(tag)
+
+        print("Saving data...")

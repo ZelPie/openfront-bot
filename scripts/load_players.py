@@ -49,8 +49,8 @@ class LoadPlayers(commands.Cog):
                     break
 
     @app_commands.command(name="load-clan-data", description="Persistent backfill that continuously retries games until clan and player data loads.")
-    @app_commands.describe(clan_tag="The clan's tag (e.g., UN)")
-    async def load_players(self, interaction: discord.Interaction, clan_tag: str):
+    @app_commands.describe(clan_tag="The clan's tag (e.g., UN)", num="Max number of games to go through (Default: 1000)")
+    async def load_players(self, interaction: discord.Interaction, clan_tag: str, num: int = 1000):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("You don't have permission.", ephemeral=True)
             return
@@ -66,6 +66,12 @@ class LoadPlayers(commands.Cog):
         tag_upper = clan_tag.upper()
         tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)
 
+        if num <= 0:
+            await interaction.response.send_message("Please provide a positive number.", ephemeral=True)
+            return
+        
+        
+
         if len(tag_upper) == 0 or len(tag_upper) > 5:
             await interaction.response.send_message("Please provide a valid clan tag.", ephemeral=True)
             return
@@ -73,9 +79,9 @@ class LoadPlayers(commands.Cog):
         await interaction.response.send_message(f"Paging backward through history for [{tag_upper}] to build the queue...")
         
         self.bot.is_swarm_active = True
-        self.bot.loop.create_task(self.background_loader(tag_upper, interaction.channel))
+        self.bot.loop.create_task(self.background_loader(tag_upper, interaction.channel), num)
 
-    async def background_loader(self, tag_upper, channel):
+    async def background_loader(self, tag_upper, channel, num):
         self.cancel_event.clear()
         self.current_queue = None
         
@@ -98,6 +104,8 @@ class LoadPlayers(commands.Cog):
 
                 processed_count_db = await self.bot.clan_manager.get_processed_count(tag_upper)
 
+                LIMIT = 50
+
                 if total_games <= 10000:
                     page = 1
                     while len(seen_game_ids) + processed_count_db < total_games:
@@ -105,7 +113,7 @@ class LoadPlayers(commands.Cog):
                             await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
                             return
                             
-                        async with session.get(f"{base_url}?page={page}&limit=50") as resp:
+                        async with session.get(f"{base_url}?page={page}&limit={LIMIT}") as resp:
                             if resp.status == 429:
                                 await asyncio.sleep(1)
                                 continue
@@ -132,7 +140,7 @@ class LoadPlayers(commands.Cog):
                                 games_to_process.append(game)
                                 consecutive_processed_count = 0
                                 
-                        if consecutive_processed_count >= 2000:
+                        if consecutive_processed_count >= num:
                             break
                             
                         page += 1
@@ -154,7 +162,7 @@ class LoadPlayers(commands.Cog):
                         
                         page = 1
                         while True:
-                            page_url = f"{base_url}?start={start_iso}&end={end_iso}&page={page}&limit=50"
+                            page_url = f"{base_url}?start={start_iso}&end={end_iso}&page={page}&limit={LIMIT}"
                             async with session.get(page_url) as resp:
                                 if resp.status == 429:
                                     await asyncio.sleep(1)
@@ -276,6 +284,10 @@ class LoadPlayers(commands.Cog):
                         f"Added **{processed_count[0]}** games.\n"
                         f"⏱ **Total Time Taken:** `{formatted_time}`"
                     )
+                
+                if self.current_queue.empty():
+                    print(f"Queue done.")
+                    await self.bot.clan_manager.finalize_batch_update(tag_upper)
 
         except Exception as e:
             await channel.send(f"An error occurred during backfill: {e}")
