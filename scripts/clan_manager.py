@@ -75,7 +75,6 @@ class ClanDataManager:
 
 
         async with self.lock:
-            print("Saving clan files.")
             await asyncio.to_thread(_write_files)
 
     async def is_processed(self, clan_tag, game_id):
