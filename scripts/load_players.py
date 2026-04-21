@@ -51,8 +51,8 @@ class LoadPlayers(commands.Cog):
                     break
 
     @app_commands.command(name="load-clan-data", description="Persistent backfill that continuously retries games until clan and player data loads.")
-    @app_commands.describe(clan_tag="The clan's tag (e.g., UN)", num="Max number of games to go through (Default: 1000)")
-    async def load_players(self, interaction: discord.Interaction, clan_tag: str, num: int = 1000):
+    @app_commands.describe(clan_tag="The clan's tag (e.g., UN)", num="Max number of games to go through (Default: 10000)")
+    async def load_players(self, interaction: discord.Interaction, clan_tag: str, num: int = 10000):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("You don't have permission.", ephemeral=True)
             return
@@ -84,6 +84,9 @@ class LoadPlayers(commands.Cog):
     async def background_loader(self, tag_upper, channel, num):
         self.cancel_event.clear()
         self.current_queue = None
+
+        stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
+        stats["load_time_seconds"] = 0
         
         base_url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions"
 
@@ -91,7 +94,6 @@ class LoadPlayers(commands.Cog):
             async with aiohttp.ClientSession() as session:
                 games_to_process = []
                 seen_game_ids = set()
-                consecutive_processed_count = 0
 
                 async with session.get(f"{base_url}?limit=1") as resp:
                     if resp.status != 200:
@@ -104,11 +106,19 @@ class LoadPlayers(commands.Cog):
 
                 processed_count_db = await self.bot.clan_manager.get_processed_count(tag_upper)
 
+                print(f"{len(seen_game_ids)} games seen")
+                print(processed_count_db)
+
                 LIMIT = 50
+                total_processed_count = 0
+
+                if processed_count_db >= total_games:
+                    await channel.send(f"[{tag_upper}] history is already fully processed.")
+                    return
 
                 if total_games <= 10000:
                     page = 1
-                    while len(seen_game_ids) + processed_count_db < total_games:
+                    while total_processed_count <= num:
                         if self.cancel_event.is_set():
                             await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
                             return
@@ -134,23 +144,19 @@ class LoadPlayers(commands.Cog):
                                 seen_game_ids.add(gid)
                                 is_processed = await self.bot.clan_manager.is_processed(tag_upper, gid)
                                 if is_processed:
-                                    consecutive_processed_count += 1
                                     continue
                                         
                                 games_to_process.append(game)
-                                consecutive_processed_count = 0
-                                
-                        if consecutive_processed_count >= num:
-                            break
+                                total_processed_count += 1
                             
                         page += 1
-                        await asyncio.sleep(0.3)
+                        await asyncio.sleep(0.2)
                 else:
                     cutoff_date = datetime(2025, 11, 10, tzinfo=timezone.utc)
                     current_end = datetime.now(timezone.utc)
                     current_start = current_end - timedelta(days=3)
                     
-                    while len(seen_game_ids) + processed_count_db < total_games:
+                    while total_processed_count <= num:
                         if self.cancel_event.is_set():
                             await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
                             return
@@ -184,17 +190,13 @@ class LoadPlayers(commands.Cog):
                                     seen_game_ids.add(gid)
                                     is_processed = await self.bot.clan_manager.is_processed(tag_upper, gid)
                                     if is_processed:
-                                        consecutive_processed_count += 1
                                         continue
                                         
                                     games_to_process.append(game)
-                                    consecutive_processed_count = 0
+                                    total_processed_count += 1
                                     
                             page += 1
                             await asyncio.sleep(0.3)
-                            
-                        if consecutive_processed_count >= 2000:
-                            break
                             
                         current_end = current_start
                         current_start = current_start - timedelta(days=3)
@@ -209,11 +211,11 @@ class LoadPlayers(commands.Cog):
                 await channel.send(f"Found **{total_to_do}** missing games for clan **[{tag_upper}]**. Starting persistent chronological queue...")
                 print(f"[{tag_upper}] STARTING PERSISTENT QUEUE for {total_to_do} games...")
 
+                # Timer task
                 async def timer():
                     try:
                         while True:
                             await asyncio.sleep(1)
-                            stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
                             stats["load_time_seconds"] = stats.get("load_time_seconds", 0) + 1
                     except asyncio.CancelledError:
                         pass
@@ -288,6 +290,8 @@ class LoadPlayers(commands.Cog):
                 if self.current_queue.empty():
                     print(f"Queue done.")
                     await self.bot.clan_manager.finalize_batch_update(tag_upper)
+                
+                stats["load_time_seconds"] = 0
 
         except Exception as e:
             await channel.send(f"An error occurred during backfill: {e}")
