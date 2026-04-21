@@ -4,3 +4,4 @@
 .vshistory
 .git.bak
 *.pyc
+*.tmp

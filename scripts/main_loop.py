@@ -205,9 +205,8 @@ class BackgroundLoop(commands.Cog):
             for clan_tag in unique_clans:
                 sessions = []
                 page = 1
-                num_pages = 1
                 try:
-                    while page <= num_pages:
+                    while True:
                         api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions?start={iso_timestamp}&page={page}&limit={LIMIT}"
                         async with http_session.get(api_url, timeout=10) as response:
                             if response.status != 200:
@@ -218,8 +217,6 @@ class BackgroundLoop(commands.Cog):
                             
                             if not results or results == []:
                                 break
-                               
-                            num_pages = int(ceil(int(api_data.get("total", 1)) / LIMIT))
 
                             sessions.extend(results)
                             page += 1

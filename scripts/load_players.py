@@ -106,11 +106,9 @@ class LoadPlayers(commands.Cog):
 
                 LIMIT = 50
 
-                num_pages = int(ceil(total_games / LIMIT))
-
                 if total_games <= 10000:
                     page = 1
-                    while len(seen_game_ids) + processed_count_db < total_games and page <= num_pages:
+                    while len(seen_game_ids) + processed_count_db < total_games:
                         if self.cancel_event.is_set():
                             await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
                             return
