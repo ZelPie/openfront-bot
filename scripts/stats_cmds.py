@@ -76,6 +76,8 @@ class StatsCmds(commands.Cog):
         if not clan_stats or "players" not in clan_stats or not clan_stats["players"]:
             await interaction.response.send_message(f"We don't have any tracked data for clan **[{tag_upper}]** yet.", ephemeral=True)
             return
+        
+        await self.bot.clan_manager.finalize_batch_update(clan_tag)
             
         found_player_id = None
         players = clan_stats.get("players", {})
@@ -237,6 +239,8 @@ class StatsCmds(commands.Cog):
         if not sorted_players:
             await interaction.response.send_message(f"No players are currently being tracked for clan **[{tag_upper}]**.", ephemeral=True)
             return
+        
+        await self.bot.clan_manager.finalize_batch_update(clan_tag)
             
         total_clan_games = clan_stats.get('total_games', 0)
 
@@ -289,6 +293,121 @@ class StatsCmds(commands.Cog):
                         await interaction.followup.send(f"Could not fetch total games for **[{tag_upper}]** from the API.")
         except Exception as e:
             await interaction.followup.send(f"An error occurred while fetching clan info: {e}")
+
+    @app_commands.command(name="match-history", description="View the saved match history for a specific clan or player.")
+    @app_commands.describe(clan_tag="The clan's tag (e.g., UN)", username="Player's username in clan (Optional)", num="Matches per page (Default: 5, Max: 10)")
+    async def match_history(self, interaction: discord.Interaction, clan_tag: str, username: str = None, num: int = 5):
+        tag_upper = clan_tag.upper()
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper) 
+
+        search_name = username.lower() if username else None
+        if search_name:
+            search_name = re.sub(r'[^A-Za-z0-9_ ]', '', search_name) 
+
+        if len(tag_upper) == 0 or len(tag_upper) > 5:
+            await interaction.response.send_message("Please provide a valid clan tag.", ephemeral=True)
+            return
+        
+        # Only validate search_name length if it was actually provided
+        if search_name and (len(search_name) == 0 or len(search_name) > 25):
+            await interaction.response.send_message("Please provide a valid username (1-25 alphanumeric characters).", ephemeral=True)
+            return
+            
+        await interaction.response.defer()
+
+        await self.bot.clan_manager.finalize_batch_update(clan_tag)
+        
+        # Load the clan data into memory
+        await self.bot.clan_manager.load_clan(tag_upper)
+        clan_data = self.bot.clan_manager.clans.get(tag_upper)
+        
+        # Set up shared variables for the view at the end
+        display_matches = []
+        display_title = f"Match History for [{tag_upper}]"
+
+        if username:
+            if not clan_data or not clan_data.get("stats", {}).get("players"):
+                await interaction.followup.send(f"No match history found for **[{tag_upper}]**. Load some games first!", ephemeral=True)
+                return
+            
+            clan_stats = clan_data.get("stats", {})
+        
+            found_player_id = None
+            players = clan_stats.get("players", {})
+            player_list = []
+
+            for player in players.keys():
+                if search_name == player.strip('[' + tag_upper + ']').strip().lower():
+                    player_list.append(player)
+                    found_player_id = player
+                    
+            if not found_player_id:
+                await interaction.followup.send(f"Could not find any tracked games for player **{username}** in clan **[{tag_upper}]**.")
+                return
+                
+            # Get all matches, reverse them, and filter for games where this player participated
+            all_matches = clan_data.get("matches", [])[::-1]
+            display_matches = [
+                match for match in all_matches 
+                if any(p in match.get("clanPlayers", []) for p in player_list)
+            ]
+            
+            if not display_matches:
+                await interaction.followup.send(f"No match history found for **{username}** in clan **[{tag_upper}]**.")
+                return
+                
+            # Make the embed title specific to the player
+            display_name = player_list[0] if len(player_list) == 1 else username
+            display_title = f"Match History: {display_name} [{tag_upper}]"
+            
+        else:
+            if not clan_data or not clan_data.get("matches"):
+                await interaction.followup.send(f"No match history found for **[{tag_upper}]**. Try loading some games first!", ephemeral=True)
+                return
+            
+            # Get matches and reverse them so the latest game is index 1
+            display_matches = clan_data["matches"][::-1]
+        
+        def format_match(index, match):
+            is_win = match.get("hasWon", False)
+            result = "🟢 VICTORY" if is_win else "🔴 DEFEAT"
+            score = match.get("score", 0)
+            gamemode = match.get("gamemode", "Unknown")
+            game_id = match.get("gameId", "Unknown")
+            players_count = len(match.get("clanPlayers", []))
+            total_players = match.get("totalPlayersInMatch", "?")
+            
+            raw_start = match.get("start")
+            time_str = "Unknown Time"
+            if raw_start:
+                # Convert ms timestamp to seconds for Discord time formatting
+                time_str = f"<t:{int(raw_start / 1000)}:R>"
+                
+            sign = "+" if is_win else ""
+
+            clan_players = match.get("clanPlayers", [])
+            clan_players_str = ", ".join([f"`{p}`" for p in clan_players]) if clan_players else "Unknown"
+            
+            return (
+                f"**{index}. {result}** | {time_str}\n"
+                f"> **Mode:** {gamemode}\n"
+                f"> **Rating:** {sign}{score} Weighted Wins\n"
+                f"> **Clan Players:** {players_count} / {total_players}\n"
+                f"> **Clan Players:** {clan_players_str}\n"
+                f"> **Match ID:** ``{game_id}``\n\n"
+            )
+            
+        # Ensure items_per_page is within a reasonable limit to prevent Discord embed limits
+        valid_num = num if 0 < num <= 10 else 5
+            
+        view = LbDisplay(
+            data=display_matches,
+            formatter_func=format_match,
+            title=display_title,
+            items_per_page=valid_num
+        )
+        
+        await interaction.followup.send(embed=view.format_page(), view=view)
 
 async def setup(bot):
     await bot.add_cog(StatsCmds(bot))

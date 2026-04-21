@@ -5,6 +5,8 @@ import aiohttp
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+from math import ceil
+
 class BackgroundLoop(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -21,7 +23,7 @@ class BackgroundLoop(commands.Cog):
         if hasattr(self, 'worker_task'):
             self.worker_task.cancel()
 
-    async def create_match_embed(self, http_session, clan_tag, session, track_losses=True, match_cache=None):
+    async def create_match_embed(self, http_session, clan_tag, session, clan_data, match_cache=None):
         if match_cache is None: match_cache = {}
 
         session_id = session.get("gameId", "Unknown")
@@ -98,25 +100,6 @@ class BackgroundLoop(commands.Cog):
         ]
         player_names = ", ".join(clan_players) if clan_players else "Unknown Players"
 
-        stats_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}"
-
-        all_data = False
-        retries = 0
-        while not all_data:
-            try:
-                async with http_session.get(stats_url, timeout=5) as stat_resp:
-                    if stat_resp.status == 200:
-                        clan_data = await stat_resp.json()
-                    else:
-                        clan_data = {}
-                    
-                    if clan_data and clan_data.get("clan", {}).get("games", 0) is not None or retries >= 3:
-                        all_data = True
-                    retries += 1
-            except Exception:
-                clan_data = {}
-                retries += 1
-                
         c_stats = clan_data.get("clan", {})
         overall_wins = c_stats.get("wins", 0)
         overall_games = c_stats.get("games", 0)
@@ -132,8 +115,6 @@ class BackgroundLoop(commands.Cog):
             color = discord.Color.green()
             rating_text = f"**+{score}** Weighted Wins"
         else:
-            if not track_losses:
-                return None 
             title = f"Clan [{clan_tag}] Defeat..."
             color = discord.Color.red()
             rating_text = f"**{score}** Weighted Wins"
@@ -143,7 +124,7 @@ class BackgroundLoop(commands.Cog):
         if gamemode.lower() in ["trios", "quads", "duos"]:
             display_gamemode = f"{gamemode} ({num_teams} Teams)"
         else:
-            display_gamemode = f"{num_teams} teams of {max_players // player_teams}" if max_players and player_teams else "Unknown Mode 1"
+            display_gamemode = f"{num_teams} teams of {max_players // player_teams}" if max_players and player_teams else "Unknown Mode"
 
         embed = discord.Embed(title=title, color=color)
         embed.add_field(name="Started", value=start_display, inline=True)
@@ -184,7 +165,18 @@ class BackgroundLoop(commands.Cog):
                             return
                             
                         latest_session = sessions[-1] 
-                        embed = await self.create_match_embed(http_session, clan_tag, latest_session, track_losses=True)
+
+                        # Fetch clan stats once for the test
+                        stats_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}"
+                        clan_data = {}
+                        try:
+                            async with http_session.get(stats_url, timeout=5) as stat_resp:
+                                if stat_resp.status == 200:
+                                    clan_data = await stat_resp.json()
+                        except Exception:
+                            pass
+                            
+                        embed = await self.create_match_embed(http_session, clan_tag, latest_session, clan_data)
                         if embed:
                             await interaction.followup.send(content=f"**TEST MODE:** Latest match for [{clan_tag.upper()}]", embed=embed)
                         else:
@@ -213,9 +205,8 @@ class BackgroundLoop(commands.Cog):
             for clan_tag in unique_clans:
                 sessions = []
                 page = 1
-                num_pages = 1
                 try:
-                    while page <= num_pages:
+                    while True:
                         api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions?start={iso_timestamp}&page={page}&limit={LIMIT}"
                         async with http_session.get(api_url, timeout=10) as response:
                             if response.status != 200:
@@ -226,8 +217,6 @@ class BackgroundLoop(commands.Cog):
                             
                             if not results or results == []:
                                 break
-                               
-                            num_pages = int(api_data.get("total", 1)) // LIMIT
 
                             sessions.extend(results)
                             page += 1
@@ -269,7 +258,6 @@ class BackgroundLoop(commands.Cog):
         async with aiohttp.ClientSession() as http_session:
             while True:
                 try:
-                    # Unpack just the clan tag and session
                     clan_tag, session = await self.live_queue.get()
                     session_id = session.get("gameId")
                     is_win = session.get("hasWon", False)
@@ -298,35 +286,47 @@ class BackgroundLoop(commands.Cog):
                                         "playerTeams": config.get("playerTeams", 0)
                                     }
 
-                                    # Manager handles saving, stat parsing, and match logging!
                                     await self.bot.clan_manager.process_game(clan_tag, session, info, mode="live")
-
                                     game_end_ms = int(info.get("end", 0)) if info.get("end") else 0
 
+                                    stats_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}"
+                                    clan_data = {}
+                                    retries = 0
+                                    while not clan_data and retries < 3:
+                                        try:
+                                            async with http_session.get(stats_url, timeout=5) as stat_resp:
+                                                if stat_resp.status == 200:
+                                                    clan_data = await stat_resp.json()
+                                                else:
+                                                    retries += 1
+                                        except Exception:
+                                            retries += 1
+
+                                    embed = await self.create_match_embed(
+                                        http_session, clan_tag, session, clan_data, self.match_details_cache
+                                    )
+
+                                    # DISTRIBUTE THE PRE-BUILT EMBED TO ALL TRACKING CHANNELS
                                     for guild_id, data in list(self.bot.server_data.items()):
                                         for tracker in data.get("trackers", []):
                                             if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
                                                 
-                                                # Use the initial scan time of this specific tracker (default to 0 to be safe)
                                                 channel_scan_time = tracker.get("initial_scan_time", 0)
-                                                
-                                                # Only announce if the game happened AFTER this channel started tracking
                                                 if game_end_ms >= channel_scan_time:
+                                                    # Delegate 'track_losses' logic here, rather than inside embed generation
+                                                    if not is_win and not tracker.get("track_losses", False):
+                                                        continue 
+                                                        
                                                     channel = self.bot.get_channel(tracker["channel_id"])
-                                                    if channel:
-                                                        embed = await self.create_match_embed(
-                                                            http_session, clan_tag, session, 
-                                                            tracker.get("track_losses", False), 
-                                                            self.match_details_cache
-                                                        )
-                                                        if embed:
-                                                            await channel.send(embed=embed)
+                                                    if channel and embed:
+                                                        await channel.send(embed=embed)
+                                    
+                                    print(f"Successfully processed game {session_id} for clan [{clan_tag}]. Win: {is_win}. Games left in queue: {len(self.queued_games) - 1}")
 
+                                    # CLEAR CACHE TO PREVENT MEMORY LEAK
+                                    self.match_details_cache.pop(session_id, None)
                                     self.queued_games.discard(session_id)
                                     stats = await self.bot.clan_manager.get_clan_stats(clan_tag)
-                                    current_winstreak = stats.get("winstreak", 0)
-                                    
-                                    print(f"Successfully processed game {session_id} for clan [{clan_tag}]. Win: {is_win}. Current Winstreak: {current_winstreak}. Games left in queue: {len(self.queued_games)}")
                                     
                                     break 
 
@@ -342,7 +342,12 @@ class BackgroundLoop(commands.Cog):
                             await asyncio.sleep(3)
                             
                     self.live_queue.task_done()
-                    await asyncio.sleep(0.3) 
+                
+                    if self.live_queue.empty():
+                        print(f"Queue done.")
+                        await self.bot.clan_manager.finalize_batch_update(clan_tag)
+
+                    await asyncio.sleep(0.2) 
                     
                 except Exception as e:
                     print(f"Live Queue Critical Error: {e}")
