@@ -254,12 +254,22 @@ class LoadPlayers(commands.Cog):
                                     
                                 games_to_process.append(game)
                                 total_processed_count += 1
+
+                                if total_processed_count % 250 == 0 and total_processed_count > 0:
+                                    print(f"[{tag_upper}] Historical scan progress: {total_processed_count} / {num} found so far...")
                                 
                                 if total_processed_count >= num:
                                     break
                                     
                         page += 1
                         await asyncio.sleep(0.2)
+                
+                total_secs = int(time.time() - self.start_time) if self.start_time else 0
+                m, s = divmod(total_secs, 60)
+                h, m = divmod(m, 60)
+                formatted_time = f"{h:03d}:{m:02d}:{s:02d}"
+
+                await channel.send(f"Data fetch complete! Found **{total_processed_count}** total games to process. ⏱ Time taken: `{formatted_time}`")
 
                 total_to_do = len(games_to_process)
                 if total_to_do == 0:
@@ -277,6 +287,8 @@ class LoadPlayers(commands.Cog):
                     self.current_queue.put_nowait(game)
 
                 downloaded_games = {}
+
+                self.start_workers = time.time()
 
                 workers_list = [
                     asyncio.create_task(fetch_game_worker(i, session, self.current_queue, self.cancel_event, downloaded_games)) 
@@ -317,23 +329,28 @@ class LoadPlayers(commands.Cog):
                 
                 for w in workers_list:
                     w.cancel()
-                
-                total_secs = int(time.time() - self.start_time) if self.start_time else 0
-                m, s = divmod(total_secs, 60)
+
+                worker_sec = int(time.time() - self.start_workers) if self.start_workers else 0
+                m, s = divmod(worker_sec, 60)
                 h, m = divmod(m, 60)
-                formatted_time = f"{h:03d}:{m:02d}:{s:02d}"
+                formatted_worker_time = f"{h:03d}:{m:02d}:{s:02d}"
+
+                total_time = worker_sec + total_secs
+                m, s = divmod(total_time, 60)
+                h, m = divmod(m, 60)
+                formatted_total_time = f"{h:03d}:{m:02d}:{s:02d}"
 
                 if self.cancel_event.is_set():
                     await channel.send(
                         f"**[{tag_upper}]** Background load CANCELLED!\n"
                         f"Saved **{processed_count[0]}** new games.\n"
-                        f"⏱ **Time Spent:** `{formatted_time}`"
+                        f"⏱ **Time Spent:** `{formatted_total_time}` (Worker Time: `{formatted_worker_time}`, Fetch Time: `{formatted_time}`)"
                     )
                 else:
                     await channel.send(
                         f"**[{tag_upper}]** Background load complete! Every game was successfully found and processed.\n"
                         f"Added **{processed_count[0]}** games.\n"
-                        f"⏱ **Total Time Taken:** `{formatted_time}`"
+                        f"⏱ **Total Time Taken:** `{formatted_total_time}` (Worker Time: `{formatted_worker_time}`, Fetch Time: `{formatted_time}`)"
                     )
                 
                 # ... 
