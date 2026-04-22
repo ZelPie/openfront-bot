@@ -33,7 +33,6 @@ class ClanDataManager:
                 "winstreak": 0, 
                 "highest_winstreak": 0, 
                 "load_time_seconds": 0,
-                "historical_cursor": None,
                 "latest_cursor": None,
                 "players": {}
             },
@@ -204,7 +203,6 @@ class ClanDataManager:
                 "players": {}, 
                 "load_time_seconds": old_stats.get("load_time_seconds", 0),
                 "initial_scan_time": old_stats.get("initial_scan_time", 0),
-                "historical_cursor": old_stats.get("historical_cursor"),
                 "latest_cursor": old_stats.get("latest_cursor")
             }
             

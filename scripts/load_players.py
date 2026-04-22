@@ -121,13 +121,33 @@ class LoadPlayers(commands.Cog):
                     await channel.send(f"[{tag_upper}] history is already fully processed.")
                     return
 
-                historical_cursor = stats.get("historical_cursor")
+                # 1. State-Saved Latest Cursor (Protects against the "Gap Problem")
                 latest_cursor = stats.get("latest_cursor")
-                
-                new_historical_cursor = historical_cursor
                 new_latest_cursor = latest_cursor
 
-                # --- PHASE 1: Catch up on missed games ---
+                # 2. Dynamic Historical Cursor (The past is solid, so just read the oldest game!)
+                historical_cursor = None
+                saved_matches = self.bot.clan_manager.clans[tag_upper].get("matches", [])
+                
+                if saved_matches:
+                    raw_start = saved_matches[0].get("start")
+                    if raw_start:
+                        # Safely convert milliseconds to an ISO string for the OpenFront API
+                        try:
+                            if isinstance(raw_start, (int, float)) or (isinstance(raw_start, str) and raw_start.isdigit()):
+                                dt = datetime.fromtimestamp(int(raw_start) / 1000, tz=timezone.utc)
+                                # The API requires the 'Z' suffix for UTC time
+                                historical_cursor = dt.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+                            else:
+                                # Fallback if it is somehow already an ISO string
+                                historical_cursor = raw_start
+                        except Exception as e:
+                            print(f"[{tag_upper}] Time conversion error for historical cursor: {e}")
+                            historical_cursor = raw_start
+                    
+                new_historical_cursor = historical_cursor
+
+                # PHASE 1: Catch up on missed games
                 if latest_cursor:
                     try:
                         dt = datetime.fromisoformat(latest_cursor.replace('Z', '+00:00'))
@@ -316,10 +336,13 @@ class LoadPlayers(commands.Cog):
                         f"⏱ **Total Time Taken:** `{formatted_time}`"
                     )
                 
+                # ... 
                 if not self.cancel_event.is_set():
-                    stats["historical_cursor"] = new_historical_cursor
-                    stats["latest_cursor"] = new_latest_cursor
-                    print(f"Queue done. Saved latest_cursor: {new_latest_cursor} | historical_cursor: {new_historical_cursor}")
+                    active_stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
+                    
+                    # We ONLY need to save the latest_cursor now!
+                    active_stats["latest_cursor"] = new_latest_cursor
+                    print(f"Queue done. Saved latest_cursor: {new_latest_cursor}")
                 
                 print(f"[{tag_upper}] Finalizing batch update and saving to disk...")
                 await self.bot.clan_manager.finalize_batch_update(tag_upper)
