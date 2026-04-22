@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import re
 from dotenv import load_dotenv
 import os
+import time
 
 from .fetch_worker import fetch_game_worker
 
@@ -175,6 +176,9 @@ class LoadPlayers(commands.Cog):
                         
                         page = 1
                         while total_processed_count < num: 
+                            if self.cancel_event.is_set():
+                                await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
+                                return
                             page_url = f"{base_url}?start={start_iso}&end={end_iso}&page={page}&limit={LIMIT}"
                             async with session.get(page_url) as resp:
                                 if resp.status == 429:
@@ -227,18 +231,8 @@ class LoadPlayers(commands.Cog):
                 await channel.send(f"Found **{total_to_do}** missing games for clan **[{tag_upper}]**. Starting persistent chronological queue...")
                 print(f"[{tag_upper}] STARTING PERSISTENT QUEUE for {total_to_do} games...")
 
-                # Timer task
-                async def timer():
-                    try:
-                        while True:
-                            await asyncio.sleep(1)
-                            stats["load_time_seconds"] = stats.get("load_time_seconds", 0) + 1
-                    except asyncio.CancelledError:
-                        pass
-                
-                timer_task = asyncio.create_task(timer())
-
                 processed_count = [0]
+                start_time = time.time()
 
                 self.current_queue = asyncio.Queue()
                 for game in games_to_process:
@@ -282,20 +276,18 @@ class LoadPlayers(commands.Cog):
                             await channel.send(f"**[{tag_upper}]** Backfill progress: **{processed_count[0]}** / {total_to_do} games processed...")
 
                 await self.current_queue.join()
-                
-                timer_task.cancel()
+
                 for w in workers_list:
                     w.cancel()
                 
-                final_stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
-                total_secs = final_stats.get("load_time_seconds", 0)
+                total_secs = int(time.time() - start_time)
                 m, s = divmod(total_secs, 60)
                 h, m = divmod(m, 60)
                 formatted_time = f"{h:03d}:{m:02d}:{s:02d}"
 
                 if self.cancel_event.is_set():
                     await channel.send(
-                        f"**[{tag_upper}]** Background load CANCELLED!\n"
+                        f"**[{tag_upper}]** Background load cancelled!\n"
                         f"Saved **{processed_count[0]}** new games.\n"
                         f"⏱ **Time Spent:** `{formatted_time}`"
                     )
