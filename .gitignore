@@ -6,3 +6,4 @@
 *.pyc
 *.tmp
 tempCodeRunnerFile.py
+/__pycache__/

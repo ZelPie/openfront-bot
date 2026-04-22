@@ -344,7 +344,6 @@ class BackgroundLoop(commands.Cog):
                     self.live_queue.task_done()
                 
                     if self.live_queue.empty():
-                        print(f"Queue done.")
                         await self.bot.clan_manager.finalize_batch_update(clan_tag)
 
                     await asyncio.sleep(0.2) 
