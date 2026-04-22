@@ -195,11 +195,17 @@ class ClanDataManager:
         async with self.lock:
             # 1. Sort matches chronologically by start time
             self.clans[tag]["matches"].sort(key=lambda x: x.get("start", 0))
+
+            old_stats = self.clans[tag]["stats"]
             
             # 2. Reset stats to recalculate from the sorted match history
             stats = {
                 "total_games": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0, 
-                "players": {}, "load_time_seconds": self.clans[tag]["stats"].get("load_time_seconds", 0)
+                "players": {}, 
+                "load_time_seconds": old_stats.get("load_time_seconds", 0),
+                "initial_scan_time": old_stats.get("initial_scan_time", 0),
+                "historical_cursor": old_stats.get("historical_cursor"),
+                "latest_cursor": old_stats.get("latest_cursor")
             }
             
             # 3. Re-process every match in the now-sorted list

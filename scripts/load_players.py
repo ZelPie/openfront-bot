@@ -129,7 +129,13 @@ class LoadPlayers(commands.Cog):
 
                 # --- PHASE 1: Catch up on missed games ---
                 if latest_cursor:
-                    await channel.send(f"Phase 1: Fetching missed games since `{latest_cursor}`...")
+                    try:
+                        dt = datetime.fromisoformat(latest_cursor.replace('Z', '+00:00'))
+                        cursor_sec = int(dt.timestamp())
+                        display_time = f"<t:{cursor_sec}:f>"
+                        await channel.send(f"Fetching missed games since {display_time}...")
+                    except Exception as e:
+                        await channel.send(f"Error occurred while processing latest_cursor: {e}")
                     page = 1
                     while total_processed_count < num:
                         if self.cancel_event.is_set():
@@ -174,7 +180,13 @@ class LoadPlayers(commands.Cog):
                 # --- PHASE 2: Deep History Scan ---
                 if total_processed_count < num:
                     if historical_cursor:
-                        await channel.send(f"Resuming history scan from `<t:{historical_cursor}>`...")
+                        try:
+                            dt = datetime.fromisoformat(historical_cursor.replace('Z', '+00:00'))
+                            cursor_sec = int(dt.timestamp())
+                            display_time = f"<t:{cursor_sec}:f>"
+                            await channel.send(f"Resuming history scan from {display_time}...")
+                        except Exception as e:
+                            await channel.send(f"Error occurred while processing historical_cursor: {e}")
                     else:
                         await channel.send("No historical cursor found. Starting deep scan from the beginning...")
                         
@@ -276,7 +288,10 @@ class LoadPlayers(commands.Cog):
                             
                         if processed_count[0] % 50 == 0 and processed_count[0] > 0:
                             print(f"[{tag_upper}] Backfill progress: {processed_count[0]} / {total_to_do}...")
-                            await asyncio.sleep(0.9)
+
+                            await self.bot.clan_manager.save_clan(tag_upper)
+
+                            await asyncio.sleep(0.6)
 
                 await self.current_queue.join()
                 
@@ -301,11 +316,13 @@ class LoadPlayers(commands.Cog):
                         f"⏱ **Total Time Taken:** `{formatted_time}`"
                     )
                 
-                if self.current_queue.empty() and not self.cancel_event.is_set():
+                if not self.cancel_event.is_set():
                     stats["historical_cursor"] = new_historical_cursor
                     stats["latest_cursor"] = new_latest_cursor
                     print(f"Queue done. Saved latest_cursor: {new_latest_cursor} | historical_cursor: {new_historical_cursor}")
-                    await self.bot.clan_manager.finalize_batch_update(tag_upper)
+                
+                print(f"[{tag_upper}] Finalizing batch update and saving to disk...")
+                await self.bot.clan_manager.finalize_batch_update(tag_upper)
 
         except Exception as e:
             await channel.send(f"An error occurred during backfill: {e}")
