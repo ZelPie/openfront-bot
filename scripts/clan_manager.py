@@ -1,3 +1,4 @@
+from datetime import time
 import os
 import json
 import asyncio
@@ -32,6 +33,8 @@ class ClanDataManager:
                 "winstreak": 0, 
                 "highest_winstreak": 0, 
                 "load_time_seconds": 0,
+                "historical_cursor": None,
+                "latest_cursor": None,
                 "players": {}
             },
             "processed": [],
@@ -58,7 +61,8 @@ class ClanDataManager:
         self.clans[tag] = clan_data
 
     async def save_clan(self, clan_tag):
-        """Atomic save: Writes to .tmp first to prevent corruption, then swaps."""
+        """Atomic save: Writes to .tmp first to prevent corruption, then swaps.
+           Includes a retry loop to bypass Windows file locking."""
         tag = clan_tag.upper()
         if tag not in self.clans:
             return
@@ -71,8 +75,17 @@ class ClanDataManager:
                 with open(temp_path, "w") as f:
                     to_save = list(self.clans[tag][key]) if key == "processed" else self.clans[tag][key]
                     json.dump(to_save, f, indent=4)
-                os.replace(temp_path, path)
-
+                
+                # FIX: Bulletproof Windows retry mechanism
+                retries = 10
+                for i in range(retries):
+                    try:
+                        os.replace(temp_path, path)
+                        break # Success! Break out of the retry loop
+                    except (PermissionError, OSError) as e:
+                        if i == retries - 1:
+                            raise e # If it failed 10 times, throw the error
+                        time.sleep(0.5) # Wait half a second and try again
 
         async with self.lock:
             await asyncio.to_thread(_write_files)
@@ -171,7 +184,8 @@ class ClanDataManager:
                     
                 p_stats["winrate"] = round((p_stats["wins"] / p_stats["games_played"]) * 100, 2)
                 
-        await self.save_clan(tag)
+        if mode == "live":
+            await self.save_clan(tag)
         return True
     
     async def finalize_batch_update(self, clan_tag):
@@ -181,11 +195,17 @@ class ClanDataManager:
         async with self.lock:
             # 1. Sort matches chronologically by start time
             self.clans[tag]["matches"].sort(key=lambda x: x.get("start", 0))
+
+            old_stats = self.clans[tag]["stats"]
             
             # 2. Reset stats to recalculate from the sorted match history
             stats = {
                 "total_games": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0, 
-                "players": {}, "load_time_seconds": self.clans[tag]["stats"].get("load_time_seconds", 0)
+                "players": {}, 
+                "load_time_seconds": old_stats.get("load_time_seconds", 0),
+                "initial_scan_time": old_stats.get("initial_scan_time", 0),
+                "historical_cursor": old_stats.get("historical_cursor"),
+                "latest_cursor": old_stats.get("latest_cursor")
             }
             
             # 3. Re-process every match in the now-sorted list

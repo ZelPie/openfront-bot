@@ -3,7 +3,7 @@ from discord.ext import tasks, commands
 from discord import app_commands
 import aiohttp
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import re
 from dotenv import load_dotenv
 import os
@@ -87,7 +87,7 @@ class LoadPlayers(commands.Cog):
             await interaction.response.send_message("Please provide a valid clan tag.", ephemeral=True)
             return
 
-        await interaction.response.send_message(f"Paging backward through history for [{tag_upper}] to build the queue...")
+        await interaction.response.send_message(f"Starting database sync for [{tag_upper}]...")
         
         self.bot.is_swarm_active = True
         self.bot.loop.create_task(self.background_loader(tag_upper, interaction.channel, num))
@@ -112,7 +112,6 @@ class LoadPlayers(commands.Cog):
                         return
                     data = await resp.json()
                     total_games = int(data.get("total", 0))
-                    print(f"[{tag_upper}] Total games according to API: {total_games}")
 
                 processed_count_db = await self.bot.clan_manager.get_processed_count(tag_upper)
                 LIMIT = 50
@@ -122,145 +121,125 @@ class LoadPlayers(commands.Cog):
                     await channel.send(f"[{tag_upper}] history is already fully processed.")
                     return
 
-                # Retrieve saved cursor to skip already processed periods
-                historical_cursor_str = stats.get("historical_cursor")
-                if historical_cursor_str:
-                    try:
-                        historical_cursor = datetime.fromisoformat(historical_cursor_str).replace(tzinfo=timezone.utc)
-                    except ValueError:
-                        historical_cursor = datetime.now(timezone.utc)
-                else:
-                    historical_cursor = datetime.now(timezone.utc)
-                    
-                cutoff_date = datetime(2025, 11, 10, tzinfo=timezone.utc)
-                limit_reached = False
-
-                # PHASE 1: Catch up on recent games
-                page = 1
-                consecutive_processed = 0
-                OVERLAP_THRESHOLD = 50
+                historical_cursor = stats.get("historical_cursor")
+                latest_cursor = stats.get("latest_cursor")
                 
-                while total_processed_count < num and not limit_reached:
-                    if self.cancel_event.is_set():
-                        await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
-                        return
-                        
-                    async with session.get(f"{base_url}?page={page}&limit={LIMIT}") as resp:
-                        if resp.status == 429:
-                            await asyncio.sleep(1)
-                            continue
-                        if resp.status != 200:
-                            break
-                            
-                        page_data = await resp.json()
-                        results = page_data.get("results", [])
-                        
-                        if not results:
-                            break
-                            
-                        for game in results:
-                            if total_processed_count >= num:
-                                limit_reached = True
-                                break
-
-                            gid = game.get("gameId")
-                            if not gid or gid in seen_game_ids:
-                                continue
-                                
-                            seen_game_ids.add(gid)
-                            is_processed = await self.bot.clan_manager.is_processed(tag_upper, gid)
-                            
-                            if is_processed:
-                                consecutive_processed += 1
-                                continue
-                                
-                            # If we find a new game, reset the consecutive counter
-                            consecutive_processed = 0
-                            games_to_process.append(game)
-                            total_processed_count += 1
-                            
-                        if consecutive_processed >= OVERLAP_THRESHOLD:
-                            print(f"[{tag_upper}] Found {OVERLAP_THRESHOLD} processed games in a row. Gap bridged. Moving to Phase 2.")
-                            break 
-                            
-                    # Break the outer while loop as well if the threshold was met inside the for loop
-                    if consecutive_processed >= OVERLAP_THRESHOLD:
-                        break
-                            
-                    page += 1
-                    await asyncio.sleep(0.25)
-
-                # PHASE 2: Deep History Scan (historical_cursor down to 2025-11-10)
-                current_end = historical_cursor
-                current_start = current_end - timedelta(days=3)
                 new_historical_cursor = historical_cursor
-                
-                if not limit_reached and current_end > cutoff_date:
-                    await channel.send(f"Resuming historical scan from `{current_end.strftime('%b %d, %Y')}` to skip already processed periods...")
-                
-                while total_processed_count < num and not limit_reached:
-                    if self.cancel_event.is_set():
-                        await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
-                        return
-                        
-                    if current_end < cutoff_date:
-                        new_historical_cursor = cutoff_date # We hit the bottom!
-                        break
-                        
-                    start_iso = current_start.strftime('%Y-%m-%dT%H:%M:%SZ')
-                    end_iso = current_end.strftime('%Y-%m-%dT%H:%M:%SZ')
-                    
+                new_latest_cursor = latest_cursor
+
+                # --- PHASE 1: Catch up on missed games ---
+                if latest_cursor:
+                    try:
+                        dt = datetime.fromisoformat(latest_cursor.replace('Z', '+00:00'))
+                        cursor_sec = int(dt.timestamp())
+                        display_time = f"<t:{cursor_sec}:f>"
+                        await channel.send(f"Fetching missed games since {display_time}...")
+                    except Exception as e:
+                        await channel.send(f"Error occurred while processing latest_cursor: {e}")
                     page = 1
-                    chunk_success = True
-                    
                     while total_processed_count < num:
-                        page_url = f"{base_url}?start={start_iso}&end={end_iso}&page={page}&limit={LIMIT}"
+                        if self.cancel_event.is_set():
+                            break
+                            
+                        page_url = f"{base_url}?start={latest_cursor}&page={page}&limit={LIMIT}"
                         async with session.get(page_url) as resp:
                             if resp.status == 429:
                                 await asyncio.sleep(1)
                                 continue
                             if resp.status != 200:
-                                chunk_success = False
                                 break
                                 
                             page_data = await resp.json()
                             results = page_data.get("results", [])
                             
                             if not results:
-                                break # Chunk is successfully empty
+                                break # Got all the new games!
                                 
                             for game in results:
-                                if total_processed_count >= num:
-                                    limit_reached = True
-                                    break
+                                game_start = game.get("gameStart")
+                                if game_start and (not new_latest_cursor or game_start > new_latest_cursor):
+                                    new_latest_cursor = game_start
                                     
                                 gid = game.get("gameId")
                                 if not gid or gid in seen_game_ids:
                                     continue
                                     
                                 seen_game_ids.add(gid)
-                                is_processed = await self.bot.clan_manager.is_processed(tag_upper, gid)
-                                if is_processed:
+                                if await self.bot.clan_manager.is_processed(tag_upper, gid):
                                     continue
                                     
                                 games_to_process.append(game)
                                 total_processed_count += 1
                                 
-                        if limit_reached or not chunk_success:
+                                if total_processed_count >= num:
+                                    break
+                                    
+                        page += 1
+                        await asyncio.sleep(0.2)
+
+                # --- PHASE 2: Deep History Scan ---
+                if total_processed_count < num:
+                    if historical_cursor:
+                        try:
+                            dt = datetime.fromisoformat(historical_cursor.replace('Z', '+00:00'))
+                            cursor_sec = int(dt.timestamp())
+                            display_time = f"<t:{cursor_sec}:f>"
+                            await channel.send(f"Resuming history scan from {display_time}...")
+                        except Exception as e:
+                            await channel.send(f"Error occurred while processing historical_cursor: {e}")
+                    else:
+                        await channel.send("No historical cursor found. Starting deep scan from the beginning...")
+                        
+                    page = 1
+                    while total_processed_count < num:
+                        if self.cancel_event.is_set():
                             break
                             
+                        if historical_cursor:
+                            page_url = f"{base_url}?end={historical_cursor}&page={page}&limit={LIMIT}"
+                        else:
+                            page_url = f"{base_url}?page={page}&limit={LIMIT}"
+                            
+                        async with session.get(page_url) as resp:
+                            if resp.status == 429:
+                                await asyncio.sleep(1)
+                                continue
+                            if resp.status != 200:
+                                break
+                                
+                            page_data = await resp.json()
+                            results = page_data.get("results", [])
+                            
+                            if not results:
+                                break # Reached the absolute end of the clan's history!
+                                
+                            for game in results:
+                                game_start = game.get("gameStart")
+                                
+                                # Capture the very first game's time as our latest cursor if this is a fresh start
+                                if game_start and not new_latest_cursor:
+                                    new_latest_cursor = game_start
+                                    
+                                # Push the historical cursor backward
+                                if game_start and (not new_historical_cursor or game_start < new_historical_cursor):
+                                    new_historical_cursor = game_start
+
+                                gid = game.get("gameId")
+                                if not gid or gid in seen_game_ids:
+                                    continue
+                                    
+                                seen_game_ids.add(gid)
+                                if await self.bot.clan_manager.is_processed(tag_upper, gid):
+                                    continue
+                                    
+                                games_to_process.append(game)
+                                total_processed_count += 1
+                                
+                                if total_processed_count >= num:
+                                    break
+                                    
                         page += 1
-                        await asyncio.sleep(0.25)
-                        
-                    # Only save the cursor forward if we successfully cleared this chunk without hitting limits or API errors
-                    if not limit_reached and chunk_success:
-                        new_historical_cursor = current_start
-                    elif not chunk_success:
-                        print("API error during chunk. Stopping queue build to prevent permanent data gaps.")
-                        break
-                        
-                    current_end = current_start
-                    current_start = current_start - timedelta(days=3)
+                        await asyncio.sleep(0.2)
 
                 total_to_do = len(games_to_process)
                 if total_to_do == 0:
@@ -269,7 +248,7 @@ class LoadPlayers(commands.Cog):
 
                 games_to_process.sort(key=lambda x: x.get("gameStart", ""))
 
-                await channel.send(f"Found **{total_to_do}** missing games for clan **[{tag_upper}]**. Starting persistent chronological queue...")
+                await channel.send(f"Found **{total_to_do}** missing games for clan **[{tag_upper}]**. Starting processing queue...")
                 print(f"[{tag_upper}] STARTING PERSISTENT QUEUE for {total_to_do} games...")
 
                 processed_count = [0]
@@ -309,7 +288,10 @@ class LoadPlayers(commands.Cog):
                             
                         if processed_count[0] % 50 == 0 and processed_count[0] > 0:
                             print(f"[{tag_upper}] Backfill progress: {processed_count[0]} / {total_to_do}...")
-                            await asyncio.sleep(0.9)
+
+                            await self.bot.clan_manager.save_clan(tag_upper)
+
+                            await asyncio.sleep(0.6)
 
                 await self.current_queue.join()
                 
@@ -334,11 +316,13 @@ class LoadPlayers(commands.Cog):
                         f"⏱ **Total Time Taken:** `{formatted_time}`"
                     )
                 
-                if self.current_queue.empty() and not self.cancel_event.is_set():
-                    # Only save the new historical cursor if everything processed smoothly!
-                    stats["historical_cursor"] = new_historical_cursor.isoformat()
-                    print(f"Queue done. Saved historical cursor: {new_historical_cursor.isoformat()}")
-                    await self.bot.clan_manager.finalize_batch_update(tag_upper)
+                if not self.cancel_event.is_set():
+                    stats["historical_cursor"] = new_historical_cursor
+                    stats["latest_cursor"] = new_latest_cursor
+                    print(f"Queue done. Saved latest_cursor: {new_latest_cursor} | historical_cursor: {new_historical_cursor}")
+                
+                print(f"[{tag_upper}] Finalizing batch update and saving to disk...")
+                await self.bot.clan_manager.finalize_batch_update(tag_upper)
 
         except Exception as e:
             await channel.send(f"An error occurred during backfill: {e}")
