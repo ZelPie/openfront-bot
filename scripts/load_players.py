@@ -103,22 +103,20 @@ class LoadPlayers(commands.Cog):
                     data = await resp.json()
                     total_games = int(data.get("total", 0))
                     print(f"[{tag_upper}] Total games according to API: {total_games}")
+                    await channel.send(f"Total games in **[{tag_upper}]** history: **{total_games}**.")
 
                 processed_count_db = await self.bot.clan_manager.get_processed_count(tag_upper)
-
-                print(f"{len(seen_game_ids)} games seen")
-                print(processed_count_db)
-
-                LIMIT = 50
-                total_processed_count = 0
 
                 if processed_count_db >= total_games:
                     await channel.send(f"[{tag_upper}] history is already fully processed.")
                     return
 
+                LIMIT = 50
+                total_processed_count = 0
+
                 if total_games <= 10000:
                     page = 1
-                    while total_processed_count <= num:
+                    while total_processed_count < num: 
                         if self.cancel_event.is_set():
                             await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
                             return
@@ -137,6 +135,9 @@ class LoadPlayers(commands.Cog):
                                 break
                                 
                             for game in results:
+                                if total_processed_count >= num:
+                                    break
+
                                 gid = game.get("gameId")
                                 if not gid or gid in seen_game_ids:
                                     continue
@@ -148,15 +149,21 @@ class LoadPlayers(commands.Cog):
                                         
                                 games_to_process.append(game)
                                 total_processed_count += 1
+                        
+                        # Check again outside the FOR loop to break the WHILE loop
+                        if total_processed_count >= num:
+                            print(f"[{tag_upper}] Reached user limit of {num}. Stopping queue build.")
+                            break
                             
                         page += 1
-                        await asyncio.sleep(0.2)
+                        await asyncio.sleep(0.25)
                 else:
                     cutoff_date = datetime(2025, 11, 10, tzinfo=timezone.utc)
                     current_end = datetime.now(timezone.utc)
                     current_start = current_end - timedelta(days=3)
                     
-                    while total_processed_count <= num:
+                    limit_reached = False
+                    while total_processed_count < num and not limit_reached: 
                         if self.cancel_event.is_set():
                             await channel.send(f"Scan for **[{tag_upper}]** cancelled by user. Aborting.")
                             return
@@ -167,7 +174,7 @@ class LoadPlayers(commands.Cog):
                         end_iso = current_end.strftime('%Y-%m-%dT%H:%M:%SZ')
                         
                         page = 1
-                        while True:
+                        while total_processed_count < num: 
                             page_url = f"{base_url}?start={start_iso}&end={end_iso}&page={page}&limit={LIMIT}"
                             async with session.get(page_url) as resp:
                                 if resp.status == 429:
@@ -180,9 +187,13 @@ class LoadPlayers(commands.Cog):
                                 results = page_data.get("results", [])
                                 
                                 if not results:
-                                    break
+                                    break # Chunk is empty, move to next 3-day interval
                                     
                                 for game in results:
+                                    if total_processed_count >= num:
+                                        limit_reached = True
+                                        break
+
                                     gid = game.get("gameId")
                                     if not gid or gid in seen_game_ids:
                                         continue
@@ -194,9 +205,14 @@ class LoadPlayers(commands.Cog):
                                         
                                     games_to_process.append(game)
                                     total_processed_count += 1
+                            
+                            # Catch the flag to break the INNER WHILE loop
+                            if limit_reached:
+                                print(f"[{tag_upper}] Reached user limit of {num}. Stopping queue build.")
+                                break
                                     
                             page += 1
-                            await asyncio.sleep(0.3)
+                            await asyncio.sleep(0.25)
                             
                         current_end = current_start
                         current_start = current_start - timedelta(days=3)
@@ -260,7 +276,10 @@ class LoadPlayers(commands.Cog):
                             
                         if processed_count[0] % 50 == 0 and processed_count[0] > 0:
                             print(f"[{tag_upper}] Backfill progress: {processed_count[0]} / {total_to_do}...")
-                            await asyncio.sleep(0.9)
+                            await asyncio.sleep(0.6)
+                        
+                        if processed_count[0] % 200 == 0 and processed_count[0] > 0:
+                            await channel.send(f"**[{tag_upper}]** Backfill progress: **{processed_count[0]}** / {total_to_do} games processed...")
 
                 await self.current_queue.join()
                 
@@ -288,7 +307,6 @@ class LoadPlayers(commands.Cog):
                     )
                 
                 if self.current_queue.empty():
-                    print(f"Queue done.")
                     await self.bot.clan_manager.finalize_batch_update(tag_upper)
                 
                 stats["load_time_seconds"] = 0
