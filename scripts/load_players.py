@@ -325,7 +325,8 @@ class LoadPlayers(commands.Cog):
 
                             await asyncio.sleep(0.6)
 
-                await self.current_queue.join()
+                if not self.cancel_event.is_set():
+                    await self.current_queue.join()
                 
                 for w in workers_list:
                     w.cancel()
