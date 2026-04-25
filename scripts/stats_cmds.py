@@ -8,10 +8,12 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 class StatsCmds(commands.Cog):
+    clan_group = app_commands.Group(name="clan", description="Commands related to clan statistics and information.")
+
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="clan-stats", description="Get overall statistics for a specific clan.")
+    @clan_group.command(name="stats", description="Get overall statistics for a specific clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)")
     async def clan_info(self, interaction: discord.Interaction, clan_tag: str):
         tag_upper = clan_tag.upper()
@@ -36,17 +38,24 @@ class StatsCmds(commands.Cog):
                         losses = games - wins
                         wl_ratio = data.get("weightedWLRatio", 0)
                         weighted_wins = data.get("weightedWins", 0)
+                        weighted_losses = data.get("weightedLosses", 0)
                         
                         clan_stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
                         winstreak = clan_stats.get("winstreak", 0)
                         highest_winstreak = clan_stats.get("highest_winstreak", 0)
+
+                        description = (
+                            f"**Total Games:** `{games}`\n"
+                            f"**Win/Loss:** `{wins}` / `{losses}`\n"
+                            f"**W/L Ratio:** `{wl_ratio:.2f}`\n"
+                            f"**Weighted Wins:** `{weighted_wins}`\n"
+                            f"**Weighted Losses:** `{weighted_losses}`\n"
+                            f"**Current Winstreak:** `{winstreak}`\n"
+                            f"**Highest Winstreak:** `{highest_winstreak}`\n"
+                        )
                         
                         embed = discord.Embed(title=f"Clan [{tag_upper}] Statistics", color=discord.Color.blurple())
-                        embed.add_field(name="Total Matches", value=f"**{games}**", inline=True)
-                        embed.add_field(name="Wins / Losses", value=f"**{wins}** / **{losses}**", inline=True)
-                        embed.add_field(name="Win/Loss Ratio", value=f"**{wl_ratio:.2f}**", inline=True)
-                        embed.add_field(name="Weighted Wins", value=f"**{weighted_wins}**", inline=True)
-                        embed.add_field(name="Winstreak", value=f"Current: **{winstreak}** | Highest: **{highest_winstreak}**", inline=True)
+                        embed.description = description
 
                         await interaction.followup.send(embed=embed)
                     else:
@@ -54,7 +63,7 @@ class StatsCmds(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"An error occurred while fetching clan info: {e}")
 
-    @app_commands.command(name="clan-player-stats", description="Get tracked internal statistics for a specific player.")
+    @clan_group.command(name="player-stats", description="Get tracked internal statistics for a specific player.")
     @app_commands.describe(clan_tag="The clan they play for (e.g., CAF)", username="The player's username")
     async def player_info(self, interaction: discord.Interaction, clan_tag: str, username: str):
         tag_upper = clan_tag.upper()
@@ -72,12 +81,19 @@ class StatsCmds(commands.Cog):
             await interaction.response.send_message("Please provide a valid username (1-25 alphanumeric characters).", ephemeral=True)
             return
         
-        clan_stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
-        if not clan_stats or "players" not in clan_stats or not clan_stats["players"]:
-            await interaction.response.send_message(f"We don't have any tracked data for clan **[{tag_upper}]** yet.", ephemeral=True)
-            return
+        await interaction.response.defer()
         
-        await self.bot.clan_manager.finalize_batch_update(clan_tag)
+        await self.bot.clan_manager.finalize_batch_update(tag_upper)
+        
+        await self.bot.clan_manager.load_clan(tag_upper)
+        clan_data = self.bot.clan_manager.clans.get(tag_upper)
+        
+        if not clan_data or not clan_data.get("stats", {}).get("players"):
+            await interaction.followup.send(f"We don't have any tracked data for clan **[{tag_upper}]** yet.")
+            return
+            
+        clan_stats = clan_data.get("stats", {})
+        clan_matches = clan_data.get("matches", [])
             
         found_player_id = None
         players = clan_stats.get("players", {})
@@ -89,7 +105,7 @@ class StatsCmds(commands.Cog):
                 found_player_id = player
         
         if not found_player_id:
-            await interaction.response.send_message(f"Could not find any tracked games for player **{username}** in clan **[{tag_upper}]**.")
+            await interaction.followup.send(f"Could not find any tracked games for player **{username}** in clan **[{tag_upper}]**.")
             return
         
         multiple = False
@@ -102,6 +118,76 @@ class StatsCmds(commands.Cog):
             embed = discord.Embed(title=f"Player Stats: {found_player_id}", color=discord.Color.blue())
 
         for p in player_list:
+            player_matches = [m for m in clan_matches if p in m.get("clanPlayers", [])]
+            
+            player_weighted_wins = 0
+            player_weighted_losses = 0
+            
+            # Variables to hold the sum of percentages for averaging later
+            team_percentage_sum = 0
+            lobby_percentage_sum = 0
+
+            team_sizes = {}
+            
+            for m in player_matches:
+                has_won = m.get("hasWon", False)
+                score = m.get("score", 0)
+                
+                if has_won:
+                    player_weighted_wins += score
+                else:
+                    player_weighted_losses -= score # Assuming score is negative on a loss
+                
+                clan_players_count = len(m.get("clanPlayers", []))
+                total_players_in_match = m.get("totalPlayersInMatch", 0)
+                
+                # 1. Calculate Lobby Fill % for this specific match
+                if total_players_in_match > 0:
+                    lobby_percentage_sum += (clan_players_count / total_players_in_match)
+                
+                # Parse gamemode safely
+                gamemode_lower = str(m.get("gamemode", "")).lower()
+                team_size = 0
+                
+                if "duos" in gamemode_lower:
+                    team_size = 2
+                    team_sizes[team_size] = team_sizes.get(team_size, 0) + 1
+                elif "trios" in gamemode_lower:
+                    team_size = 3
+                    team_sizes[team_size] = team_sizes.get(team_size, 0) + 1
+                elif "quads" in gamemode_lower:
+                    team_size = 4
+                    team_sizes[team_size] = team_sizes.get(team_size, 0) + 1
+                else:
+                    numbers = re.findall(r'\d+', str(m.get("gamemode", "")))
+                    if len(numbers) >= 2:
+                        team_size = int(numbers[1])
+                        team_sizes[team_size] = team_sizes.get(team_size, 0) + 1
+                
+                # 2. Calculate Team Fill % for this specific match
+                if team_size > 0:
+                    team_percentage_sum += (clan_players_count / team_size)
+
+            # 3. Calculate the true averages (Sum of percentages / Number of matches * 100)
+            total_matches_played = len(player_matches)
+
+            favourite_team_size = max(team_sizes, key=team_sizes.get) if team_sizes else None
+            fav_team_str = "None"
+            if favourite_team_size == 2:
+                favourite_team_str = "Duos"
+            elif favourite_team_size == 3:
+                favourite_team_str = "Trios"
+            elif favourite_team_size == 4:
+                favourite_team_str = "Quads"
+            else:
+                favourite_team_str = f"{favourite_team_size}-mans" if favourite_team_size else "Unknown"
+
+            avg_team_percentage = (team_percentage_sum / total_matches_played * 100) if total_matches_played > 0 else 0
+            avg_lobby_percentage = (lobby_percentage_sum / total_matches_played * 100) if total_matches_played > 0 else 0
+            
+            # WL Ratio
+            player_wl_ratio = (player_weighted_wins / player_weighted_losses) if player_weighted_losses > 0 else player_weighted_wins
+
             current_p_num += 1
             stats = players[p]
             games_played = stats.get("games_played", 0)
@@ -117,13 +203,21 @@ class StatsCmds(commands.Cog):
             embed.add_field(name="Player Name", value=f"**{p}**", inline=False)
             embed.add_field(name="Personal Win/Loss", value=f"**{wins}W** - **{losses}L**", inline=True)
             embed.add_field(name="Personal Win Rate", value=f"**{winrate:.1f}%**", inline=True)
+            embed.add_field(name="", value="", inline=True)
             embed.add_field(name="Personal Winstreak", value=f"Current: **{winstreak}** | Highest: **{highest_winstreak}**", inline=False)
+            embed.add_field(name="Personal Weighted Wins/Losses", value=f"**{player_weighted_wins:.1f}** / **{player_weighted_losses:.1f}**", inline=True)
+            embed.add_field(name="Personal Weighted W/L", value=f"**{player_wl_ratio:.1f}**", inline=True)
+            embed.add_field(name="", value="", inline=True)
+            embed.add_field(name="Average Team Fill %", value=f"**{avg_team_percentage:.1f}%**", inline=True)
+            embed.add_field(name="Average Lobby Fill %", value=f"**{avg_lobby_percentage:.1f}%**", inline=True)
+            embed.add_field(name="", value="", inline=True)
+            embed.add_field(name="Favourite Gamemode", value=f"**{favourite_team_str}**", inline=False)
             embed.add_field(name="Clan Participation", value=f"Played in ``{games_played}`` / ``{total_clan_games}`` tracked matches (``{participation:.1f}%`` of clan activity)", inline=False)
             
             if multiple and current_p_num < len(player_list):
                 embed.add_field(name="", value="----------------------------------------------------------------", inline=False)
             
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="leaderboard", description="Displays the top OpenFront clans.")
     @app_commands.describe(sort_by="Choose how to rank the clans", num="How many clans per page (Default: 5)", lower_num="What place to start the list from (Default: 1)", reverse_sort="Whether to reverse the sort order (Default: False)")
@@ -164,15 +258,18 @@ class StatsCmds(commands.Cog):
                         def format_clan(rank, clan):
                             tag = clan.get("clanTag", "UNK")
                             wins = clan.get("wins", 0)
+                            losses = clan.get("losses", 0)
                             weighted_wins = clan.get("weightedWins", 0)
                             games = clan.get("games", 0)
                             wl_ratio = clan.get("weightedWLRatio", 0)
+                            weighted_losses = clan.get("weightedLosses", 0)
                             
                             wins_str = f"``{wins}``" if sort_choice in ["wins", "default"] else f"{wins}"
                             wl_str = f"``{wl_ratio:.2f}``" if sort_choice == "winrate" else f"{wl_ratio:.2f}"
                             weighted_wins_str = f"``{weighted_wins}``" if sort_choice == "weighted_wins" else f"{weighted_wins}"
+                            weighted_losses_str = f"``{weighted_losses}``" if sort_choice == "weighted_wins" else f"{weighted_losses}"
 
-                            stat_string = f"Wins: {wins_str} (Weighted Wins: {weighted_wins_str}) \n Games: {games} \n W/L: {wl_str}"
+                            stat_string = f"Wins: {wins_str} (Weighted Wins: {weighted_wins_str})\nLosses: {losses} (Weighted Losses: {weighted_losses_str})\nGames: {games}\nW/L: {wl_str}"
                             return f"**#{rank}. [{tag}]**\n{stat_string}\n\n"
                             
                         view = LbDisplay(
@@ -188,7 +285,7 @@ class StatsCmds(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"An error occurred while loading the leaderboard: {e}")
 
-    @app_commands.command(name="clan-players", description="List all tracked players for a specific clan.")
+    @clan_group.command(name="players", description="List all tracked players for a specific clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)", num="Number of players per page", min_games="Minimum games played to be included in the list (Default: 5)", sort_by="Choose how to sort the players", reverse_sort="Whether to reverse the sort order (Default: False)")
     @app_commands.choices(sort_by=[
         app_commands.Choice(name="Win Rate", value="winrate"),
@@ -265,9 +362,9 @@ class StatsCmds(commands.Cog):
         
         await interaction.response.send_message(embed=view.format_page(), view=view)
     
-    @app_commands.command(name="outstanding-games", description="Display the number of games that have not been processed for a specific clan.")
+    @clan_group.command(name="missing-games", description="Display the number of games that have not been processed for a specific clan.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., CAF)")
-    async def outstanding_games(self, interaction: discord.Interaction, clan_tag: str):
+    async def missing_games(self, interaction: discord.Interaction, clan_tag: str):
         await interaction.response.defer()
         tag_upper = clan_tag.upper()
 
@@ -294,7 +391,7 @@ class StatsCmds(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"An error occurred while fetching clan info: {e}")
 
-    @app_commands.command(name="match-history", description="View the saved match history for a specific clan or player.")
+    @clan_group.command(name="match-history", description="View the saved match history for a specific clan or player.")
     @app_commands.describe(clan_tag="The clan's tag (e.g., UN)", username="Player's username in clan (Optional)", num="Matches per page (Default: 5, Max: 10)")
     async def match_history(self, interaction: discord.Interaction, clan_tag: str, username: str = None, num: int = 5):
         tag_upper = clan_tag.upper()

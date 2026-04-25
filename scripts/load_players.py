@@ -121,13 +121,33 @@ class LoadPlayers(commands.Cog):
                     await channel.send(f"[{tag_upper}] history is already fully processed.")
                     return
 
-                historical_cursor = stats.get("historical_cursor")
+                # 1. State-Saved Latest Cursor (Protects against the "Gap Problem")
                 latest_cursor = stats.get("latest_cursor")
-                
-                new_historical_cursor = historical_cursor
                 new_latest_cursor = latest_cursor
 
-                # --- PHASE 1: Catch up on missed games ---
+                # 2. Dynamic Historical Cursor (The past is solid, so just read the oldest game!)
+                historical_cursor = None
+                saved_matches = self.bot.clan_manager.clans[tag_upper].get("matches", [])
+                
+                if saved_matches:
+                    raw_start = saved_matches[0].get("start")
+                    if raw_start:
+                        # Safely convert milliseconds to an ISO string for the OpenFront API
+                        try:
+                            if isinstance(raw_start, (int, float)) or (isinstance(raw_start, str) and raw_start.isdigit()):
+                                dt = datetime.fromtimestamp(int(raw_start) / 1000, tz=timezone.utc)
+                                # The API requires the 'Z' suffix for UTC time
+                                historical_cursor = dt.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+                            else:
+                                # Fallback if it is somehow already an ISO string
+                                historical_cursor = raw_start
+                        except Exception as e:
+                            print(f"[{tag_upper}] Time conversion error for historical cursor: {e}")
+                            historical_cursor = raw_start
+                    
+                new_historical_cursor = historical_cursor
+
+                # PHASE 1: Catch up on missed games
                 if latest_cursor:
                     try:
                         dt = datetime.fromisoformat(latest_cursor.replace('Z', '+00:00'))
@@ -234,12 +254,22 @@ class LoadPlayers(commands.Cog):
                                     
                                 games_to_process.append(game)
                                 total_processed_count += 1
+
+                                if total_processed_count % 250 == 0 and total_processed_count > 0:
+                                    print(f"[{tag_upper}] Historical scan progress: {total_processed_count} / {num} found so far...")
                                 
                                 if total_processed_count >= num:
                                     break
                                     
                         page += 1
                         await asyncio.sleep(0.2)
+                
+                total_secs = int(time.time() - self.start_time) if self.start_time else 0
+                m, s = divmod(total_secs, 60)
+                h, m = divmod(m, 60)
+                formatted_time = f"{h:03d}:{m:02d}:{s:02d}"
+
+                await channel.send(f"Data fetch complete! Found **{total_processed_count}** total games to process. ⏱ Time taken: `{formatted_time}`")
 
                 total_to_do = len(games_to_process)
                 if total_to_do == 0:
@@ -257,6 +287,8 @@ class LoadPlayers(commands.Cog):
                     self.current_queue.put_nowait(game)
 
                 downloaded_games = {}
+
+                self.start_workers = time.time()
 
                 workers_list = [
                     asyncio.create_task(fetch_game_worker(i, session, self.current_queue, self.cancel_event, downloaded_games)) 
@@ -293,33 +325,42 @@ class LoadPlayers(commands.Cog):
 
                             await asyncio.sleep(0.6)
 
-                await self.current_queue.join()
+                if not self.cancel_event.is_set():
+                    await self.current_queue.join()
                 
                 for w in workers_list:
                     w.cancel()
-                
-                total_secs = int(time.time() - self.start_time) if self.start_time else 0
-                m, s = divmod(total_secs, 60)
+
+                worker_sec = int(time.time() - self.start_workers) if self.start_workers else 0
+                m, s = divmod(worker_sec, 60)
                 h, m = divmod(m, 60)
-                formatted_time = f"{h:03d}:{m:02d}:{s:02d}"
+                formatted_worker_time = f"{h:03d}:{m:02d}:{s:02d}"
+
+                total_time = worker_sec + total_secs
+                m, s = divmod(total_time, 60)
+                h, m = divmod(m, 60)
+                formatted_total_time = f"{h:03d}:{m:02d}:{s:02d}"
 
                 if self.cancel_event.is_set():
                     await channel.send(
                         f"**[{tag_upper}]** Background load CANCELLED!\n"
                         f"Saved **{processed_count[0]}** new games.\n"
-                        f"⏱ **Time Spent:** `{formatted_time}`"
+                        f"⏱ **Time Spent:** `{formatted_total_time}` (Worker Time: `{formatted_worker_time}`, Fetch Time: `{formatted_time}`)"
                     )
                 else:
                     await channel.send(
                         f"**[{tag_upper}]** Background load complete! Every game was successfully found and processed.\n"
                         f"Added **{processed_count[0]}** games.\n"
-                        f"⏱ **Total Time Taken:** `{formatted_time}`"
+                        f"⏱ **Total Time Taken:** `{formatted_total_time}` (Worker Time: `{formatted_worker_time}`, Fetch Time: `{formatted_time}`)"
                     )
                 
+                # ... 
                 if not self.cancel_event.is_set():
-                    stats["historical_cursor"] = new_historical_cursor
-                    stats["latest_cursor"] = new_latest_cursor
-                    print(f"Queue done. Saved latest_cursor: {new_latest_cursor} | historical_cursor: {new_historical_cursor}")
+                    active_stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
+                    
+                    # We ONLY need to save the latest_cursor now!
+                    active_stats["latest_cursor"] = new_latest_cursor
+                    print(f"Queue done. Saved latest_cursor: {new_latest_cursor}")
                 
                 print(f"[{tag_upper}] Finalizing batch update and saving to disk...")
                 await self.bot.clan_manager.finalize_batch_update(tag_upper)
