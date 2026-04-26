@@ -3,7 +3,6 @@ from discord.ext import tasks, commands
 from discord import app_commands
 import aiohttp
 import asyncio
-from datetime import datetime, timezone
 import re
 from dotenv import load_dotenv
 import os
@@ -52,17 +51,25 @@ class RecheckCmds(commands.Cog):
         with open(temp_path, "w") as f:
             json.dump(list(processed_set), f)
             
-        # Instantly swap it. If it crashes during the JSON dump, the original file is untouched.
-        try:
-            os.replace(temp_path, path)
-        except OSError as e:
-            print(f"Failed to atomically save progress for {clan_tag}: {e}")
+        # Instantly swap it using the bulletproof retry loop
+        retries = 10
+        for i in range(retries):
+            try:
+                os.replace(temp_path, path)
+                break
+            except (PermissionError, OSError) as e:
+                if i == retries - 1:
+                    print(f"Failed to atomically save progress for {clan_tag}: {e}")
+                time.sleep(0.5)
 
     def clear_progress(self, clan_tag):
         """Deletes the temporary progress file once fully complete."""
         path = self.get_progress_path(clan_tag)
         if os.path.exists(path):
-            os.remove(path)
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     @app_commands.command(name="cancel-recheck", description="Cancels the currently running background recheck safely.")
     async def cancel_recheck(self, interaction: discord.Interaction):
@@ -142,11 +149,14 @@ class RecheckCmds(commands.Cog):
         try:
             async with aiohttp.ClientSession() as session:
                 clan_data = self.bot.clan_manager.clans[tag_upper]
+                
+                # ONLY USE ALREADY SAVED MATCHES
                 all_matches = clan_data.get("matches", [])
                 
                 # Load previously finished gameIds so we can resume
                 processed_ids = self.load_progress(tag_upper)
 
+                # Filter out the games we've already rechecked
                 games_to_process = [m for m in all_matches if m.get("gameId") not in processed_ids]
                 
                 total_to_do = len(games_to_process)
@@ -188,7 +198,6 @@ class RecheckCmds(commands.Cog):
                     if g_data:
                         info = g_data.get("info", {})
                         
-                        # Generate the newly formatted, fully up-to-date match dictionary
                         new_match_data = self.bot.clan_manager.extract_match_record(tag_upper, game, info)
                         
                         # Apply live update directly to the clan manager memory
@@ -201,11 +210,12 @@ class RecheckCmds(commands.Cog):
                         processed_ids.add(gid)
                         processed_count[0] += 1
                             
-                        # Batch save every 50 games to keep the live data safe without blocking constantly
                         if processed_count[0] % 50 == 0 and processed_count[0] > 0:
                             print(f"[{tag_upper}] Recheck progress: {processed_count[0]} / {total_to_do}...")
-                            self.save_progress(tag_upper, processed_ids)
                             await self.bot.clan_manager.save_clan(tag_upper)
+                            
+                            self.save_progress(tag_upper, processed_ids)
+                            
                             await asyncio.sleep(0.6)
 
                 if not self.cancel_event.is_set():
@@ -221,9 +231,9 @@ class RecheckCmds(commands.Cog):
                 formatted_worker_time = f"{h:03d}:{m:02d}:{s:02d}"
 
                 if self.cancel_event.is_set():
-                    # Save final progress block from when the cancel was triggered
-                    self.save_progress(tag_upper, processed_ids)
+                    # Same order for the cancel hook: Save main DB, then progress
                     await self.bot.clan_manager.save_clan(tag_upper)
+                    self.save_progress(tag_upper, processed_ids)
                     
                     await channel.send(
                         f"**[{tag_upper}]** Recheck CANCELLED!\n"
@@ -231,9 +241,11 @@ class RecheckCmds(commands.Cog):
                         f"⏱ **Time Spent:** `{formatted_worker_time}`"
                     )
                 else:
+                    # Save DB one last time
+                    await self.bot.clan_manager.save_clan(tag_upper)
+                    
                     # Clear out the .tmp file entirely now that 100% of the games have been checked
                     self.clear_progress(tag_upper)
-                    await self.bot.clan_manager.save_clan(tag_upper)
                     
                     # Finalize batch update to trigger a recalculation of winstreaks/stats using the new data
                     print(f"[{tag_upper}] Finalizing batch update and calculating stats...")

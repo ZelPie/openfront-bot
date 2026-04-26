@@ -213,7 +213,7 @@ class BackgroundLoop(commands.Cog):
                         except Exception:
                             pass
                             
-                        embed = await self.create_match_embed(http_session, clan_tag, latest_session, clan_data)
+                        embed = await self.create_match_embed(http_session, clan_tag.upper(), latest_session, clan_data)
                         if embed:
                             await interaction.followup.send(content=f"**TEST MODE:** Latest match for [{clan_tag.upper()}]", embed=embed)
                         else:
