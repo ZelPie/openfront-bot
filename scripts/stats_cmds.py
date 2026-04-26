@@ -171,16 +171,24 @@ class StatsCmds(commands.Cog):
             # 3. Calculate the true averages (Sum of percentages / Number of matches * 100)
             total_matches_played = len(player_matches)
 
+            num_team_mode = 0
+
+            # Determine favourite team size and count how many matches were played in team modes (5 or more players)
+            for team in team_sizes:
+                if team >= 5:
+                    num_team_mode += team_sizes[team]
+
             favourite_team_size = max(team_sizes, key=team_sizes.get) if team_sizes else None
-            fav_team_str = "None"
+            favourite_team_size = max(favourite_team_size, num_team_mode) if num_team_mode and favourite_team_size else None
+            print(f"duos: {team_sizes.get(2, 0)}, trios: {team_sizes.get(3, 0)}, quads: {team_sizes.get(4, 0)}, other team modes (5+ players): {num_team_mode}")
             if favourite_team_size == 2:
-                favourite_team_str = "Duos"
+                favourite_team_str = f"Duos ({team_sizes[2]} matches)"
             elif favourite_team_size == 3:
-                favourite_team_str = "Trios"
+                favourite_team_str = f"Trios ({team_sizes[3]} matches)"
             elif favourite_team_size == 4:
-                favourite_team_str = "Quads"
+                favourite_team_str = f"Quads ({team_sizes[4]} matches)"
             else:
-                favourite_team_str = f"{favourite_team_size}-mans" if favourite_team_size else "Unknown"
+                favourite_team_str = f"Team Games ({num_team_mode} matches)"
 
             avg_team_percentage = (team_percentage_sum / total_matches_played * 100) if total_matches_played > 0 else 0
             avg_lobby_percentage = (lobby_percentage_sum / total_matches_played * 100) if total_matches_played > 0 else 0

@@ -133,6 +133,9 @@ class ClanDataManager:
         max_players = config.get("maxPlayers", 0)
         player_teams = config.get("playerTeams", 0)
         
+        # --- GOAL 1: Extract Map Name ---
+        map_name = config.get("mapName", config.get("map", "Unknown"))
+        
         gamemode_raw = session_data.get("playerTeams", "Unknown")
         if str(gamemode_raw).lower() in ["trios", "quads", "duos"]:
             gamemode = f"{gamemode_raw} ({num_teams} Teams)"
@@ -140,7 +143,27 @@ class ClanDataManager:
             gamemode = f"{num_teams} teams of {max_players // player_teams}" if max_players and player_teams else "Unknown Mode"
 
         all_players = info_data.get("players", [])
-        clan_players = [p.get("username", "Unknown") for p in all_players if p.get("clanTag", "").upper() == tag]
+        clan_players = {}
+        
+        # --- GOAL 6: Extract Per-Player Stats ---
+        player_match_stats = {}
+        for p in all_players:
+            if p.get("clanTag", "").upper() == tag:
+                p_name = p.get("username", "Unknown")
+                
+                clan_players[p_name] = {
+                    "gold": sum(p.get("gold", [0]), key=p.get("gold", [0])),
+                    "nukes": sum(p.get("nukesLaunched", [0]), key=p.get("nukesLaunched", [0]))
+                }
+                
+                # Placeholders for future expanded data. 
+                # If the OpenFront API provides this natively in the match data, grab it here.
+                # If you need a separate API call per player, you can await a fetch function here.
+                player_match_stats[p_name] = {
+                    "gold": p.get("gold", 0), 
+                    "nukes": p.get("nukesLaunched", 0),
+                    # "kills": p.get("kills", 0),
+                }
 
         async with self.lock:
             match_record = {
@@ -148,8 +171,12 @@ class ClanDataManager:
                 "start": info_data.get("start"), 
                 "end": info_data.get("end"),
                 "hasWon": is_win, "score": score, "gamemode": gamemode,
-                "totalPlayersInMatch": len(all_players), "clanPlayers": clan_players
+                "mapName": map_name, # Saved Map Name
+                "totalPlayersInMatch": len(all_players), 
+                "clanPlayers": clan_players,
+                "playerStats": player_match_stats
             }
+
             self.clans[tag]["matches"].append(match_record)
             self.clans[tag]["processed"].add(game_id)
 

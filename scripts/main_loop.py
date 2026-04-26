@@ -5,6 +5,9 @@ import aiohttp
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+import re
+import urllib.parse
+
 from math import ceil
 
 class BackgroundLoop(commands.Cog):
@@ -23,6 +26,19 @@ class BackgroundLoop(commands.Cog):
         if hasattr(self, 'worker_task'):
             self.worker_task.cancel()
 
+    def get_map_thumbnail(map_name: str, prod_url: str = "https://openfront.io") -> str:
+        if not map_name:
+            return f"{prod_url}/images/GameplayScreenshot.png"
+        
+        # Lowercase and remove spaces, dots, and parentheses
+        normalized_map = re.sub(r'[\s.()]+', '', map_name.lower())
+        
+        if normalized_map:
+            encoded_map = urllib.parse.quote(normalized_map)
+            return f"{prod_url}/maps/{encoded_map}/thumbnail.webp"
+            
+        return f"{prod_url}/images/GameplayScreenshot.png"
+
     async def create_match_embed(self, http_session, clan_tag, session, clan_data, match_cache=None):
         if match_cache is None: match_cache = {}
 
@@ -39,6 +55,8 @@ class BackgroundLoop(commands.Cog):
         all_players = []
         max_players = 0
         player_teams = 0
+
+        map_name = "Unknown Map"
         
         if session_id in match_cache:
             cache_data = match_cache[session_id]
@@ -48,6 +66,8 @@ class BackgroundLoop(commands.Cog):
 
             max_players = cache_data.get("maxPlayers", 0)
             player_teams = cache_data.get("playerTeams", 0)
+
+            map_name = cache_data.get("gameMap", "Unknown Map")
         else:
             all_data = False
             game_url = f"https://api.openfront.io/public/game/{session_id}?turns=false"
@@ -62,11 +82,20 @@ class BackgroundLoop(commands.Cog):
                             
                             if not raw_start: raw_start = info.get("start")
                             if not raw_end: raw_end = info.get("end")
+
+                            map_name = config.get("gameMap", "Unknown Map")
                             
                             max_players = config.get("maxPlayers")
                             player_teams = config.get("playerTeams")
 
-                            match_cache[session_id] = {"players": all_players, "start": raw_start, "end": raw_end, "maxPlayers": max_players, "playerTeams": player_teams}
+                            match_cache[session_id] = {
+                                "players": all_players, 
+                                "start": raw_start, 
+                                "end": raw_end, 
+                                "maxPlayers": max_players, 
+                                "playerTeams": player_teams,
+                                "mapName": map_name
+                            }
 
                             if all_players and game_data and config:
                                 all_data = True
@@ -127,6 +156,11 @@ class BackgroundLoop(commands.Cog):
             display_gamemode = f"{num_teams} teams of {max_players // player_teams}" if max_players and player_teams else "Unknown Mode"
 
         embed = discord.Embed(title=title, color=color)
+
+        thumbnail_url = self.get_map_thumbnail(map_name)
+        embed.set_thumbnail(url=thumbnail_url)
+
+        embed.add_field(name="Map", value=map_name, inline=False)
         embed.add_field(name="Started", value=start_display, inline=True)
         embed.add_field(name="Ended", value=end_display, inline=True)
         embed.add_field(name="Duration", value=duration_display, inline=True)
