@@ -26,7 +26,7 @@ class BackgroundLoop(commands.Cog):
         if hasattr(self, 'worker_task'):
             self.worker_task.cancel()
 
-    def get_map_thumbnail(map_name: str, prod_url: str = "https://openfront.io") -> str:
+    def get_map_thumbnail(self, map_name: str, prod_url: str = "https://openfront.io") -> str:
         if not map_name:
             return f"{prod_url}/images/GameplayScreenshot.png"
         
@@ -158,9 +158,12 @@ class BackgroundLoop(commands.Cog):
         embed = discord.Embed(title=title, color=color)
 
         thumbnail_url = self.get_map_thumbnail(map_name)
-        embed.set_thumbnail(url=thumbnail_url)
 
-        embed.add_field(name="Map", value=map_name, inline=False)
+        replay_url = f"https://openfront.io/game/{session_id}?live"
+
+        embed.set_image(url=thumbnail_url)
+
+        embed.add_field(name="Map", value=f"[{map_name}]({replay_url})", inline=False)
         embed.add_field(name="Started", value=start_display, inline=True)
         embed.add_field(name="Ended", value=end_display, inline=True)
         embed.add_field(name="Duration", value=duration_display, inline=True)
@@ -317,7 +320,8 @@ class BackgroundLoop(commands.Cog):
                                         "start": info.get("start"),
                                         "end": info.get("end"),
                                         "maxPlayers": config.get("maxPlayers", 0),
-                                        "playerTeams": config.get("playerTeams", 0)
+                                        "playerTeams": config.get("playerTeams", 0),
+                                        "gameMap": config.get("gameMap", "Unknown Map")
                                     }
 
                                     await self.bot.clan_manager.process_game(clan_tag, session, info, mode="live")

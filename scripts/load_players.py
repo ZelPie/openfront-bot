@@ -147,6 +147,9 @@ class LoadPlayers(commands.Cog):
                     
                 new_historical_cursor = historical_cursor
 
+                if not latest_cursor:
+                    latest_cursor = historical_cursor
+
                 # PHASE 1: Catch up on missed games
                 if latest_cursor:
                     try:

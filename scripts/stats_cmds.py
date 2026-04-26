@@ -118,7 +118,7 @@ class StatsCmds(commands.Cog):
             embed = discord.Embed(title=f"Player Stats: {found_player_id}", color=discord.Color.blue())
 
         for p in player_list:
-            player_matches = [m for m in clan_matches if p in m.get("clanPlayers", [])]
+            player_matches = [m for m in clan_matches if p in m.get("clanPlayers", {})]
             
             player_weighted_wins = 0
             player_weighted_losses = 0
@@ -138,7 +138,7 @@ class StatsCmds(commands.Cog):
                 else:
                     player_weighted_losses -= score # Assuming score is negative on a loss
                 
-                clan_players_count = len(m.get("clanPlayers", []))
+                clan_players_count = len(m.get("clanPlayers", {}))
                 total_players_in_match = m.get("totalPlayersInMatch", 0)
                 
                 # 1. Calculate Lobby Fill % for this specific match
@@ -454,7 +454,7 @@ class StatsCmds(commands.Cog):
             all_matches = clan_data.get("matches", [])[::-1]
             display_matches = [
                 match for match in all_matches 
-                if any(p in match.get("clanPlayers", []) for p in player_list)
+                if any(p in match.get("clanPlayers", {}) for p in player_list)
             ]
             
             if not display_matches:
@@ -479,7 +479,7 @@ class StatsCmds(commands.Cog):
             score = match.get("score", 0)
             gamemode = match.get("gamemode", "Unknown")
             game_id = match.get("gameId", "Unknown")
-            players_count = len(match.get("clanPlayers", []))
+            players_count = len(match.get("clanPlayers", {}))
             total_players = match.get("totalPlayersInMatch", "?")
             
             raw_start = match.get("start")
@@ -490,7 +490,7 @@ class StatsCmds(commands.Cog):
                 
             sign = "+" if is_win else ""
 
-            clan_players = match.get("clanPlayers", [])
+            clan_players = match.get("clanPlayers", {})
             clan_players_str = ", ".join([f"`{p}`" for p in clan_players]) if clan_players else "Unknown"
             
             return (

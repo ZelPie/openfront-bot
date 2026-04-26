@@ -55,16 +55,16 @@ class RecheckCmds(commands.Cog):
                             match["mapName"] = config.get("mapName", config.get("map", "Unknown"))
 
                             # Inject Player Stats
-                            player_match_stats = {}
+                            updated_clan_players = {}
                             for p in all_players:
                                 if p.get("clanTag", "").upper() == tag_upper:
                                     p_name = p.get("username", "Unknown")
-                                    player_match_stats[p_name] = {
+                                    updated_clan_players[p_name] = {
                                         "gold": p.get("gold", 0),
                                         "nukes": p.get("nukesLaunched", 0)
                                     }
                             
-                            match["playerStats"] = player_match_stats
+                            match["playerStats"] = updated_clan_players
                             updated_count += 1
                         elif resp.status == 429:
                             await asyncio.sleep(2)  # Respect rate limits

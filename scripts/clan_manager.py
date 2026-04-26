@@ -144,25 +144,77 @@ class ClanDataManager:
 
         all_players = info_data.get("players", [])
         clan_players = {}
-        
-        # --- GOAL 6: Extract Per-Player Stats ---
-        player_match_stats = {}
+
+        # --- SAFE EXTRACTION HELPERS ---
+        # Safely adds up an array of strings, ignoring missing or bad data
+        def safe_sum(arr):
+            if not isinstance(arr, list): return 0
+            total = 0
+            for item in arr:
+                try:
+                    total += int(item)
+                except (ValueError, TypeError):
+                    pass
+            return total
+
+        # Safely grabs a specific index from an array, returning 0 if it doesn't exist
+        def safe_index(arr, idx):
+            if isinstance(arr, list) and len(arr) > idx:
+                try:
+                    return int(arr[idx])
+                except (ValueError, TypeError):
+                    pass
+            return 0
+
         for p in all_players:
             if p.get("clanTag", "").upper() == tag:
                 p_name = p.get("username", "Unknown")
                 
-                clan_players[p_name] = {
-                    "gold": sum(p.get("gold", [0]), key=p.get("gold", [0])),
-                    "nukes": sum(p.get("nukesLaunched", [0]), key=p.get("nukesLaunched", [0]))
-                }
+                # Use "or {}" to protect against the API returning null instead of missing the key
+                p_stats = p.get("stats", {}) or {}
                 
-                # Placeholders for future expanded data. 
-                # If the OpenFront API provides this natively in the match data, grab it here.
-                # If you need a separate API call per player, you can await a fetch function here.
-                player_match_stats[p_name] = {
-                    "gold": p.get("gold", 0), 
-                    "nukes": p.get("nukesLaunched", 0),
-                    # "kills": p.get("kills", 0),
+                bombs = p_stats.get("bombs", {}) or {}
+                units = p_stats.get("units", {}) or {}
+                boats = p_stats.get("boats", {}) or {}
+                conquests = p_stats.get("conquests", []) or []
+                gold = p_stats.get("gold", []) or []
+
+                clan_players[p_name] = {
+                    "economy": {
+                        "passive/workers": safe_index(gold, 0),
+                        "conquered": safe_index(gold, 1),
+                        "tradeships": safe_index(gold, 2),
+                        "pirated": safe_index(gold, 3),
+                        "personal_trains": safe_index(gold, 4),
+                        "other_trains": safe_index(gold, 5),
+                        "total": safe_sum(gold)
+                    },
+                    "conquests": {
+                        "player_kills": safe_index(conquests, 0),
+                        "nation_kills": safe_index(conquests, 1),
+                        "bot_kills": safe_index(conquests, 2)
+                    },
+                    "units": {
+                        "cities": safe_sum(units.get("city", [])),
+                        "ports": safe_sum(units.get("port", [])),
+                        "factories": safe_sum(units.get("fact", [])),
+                        "warships": safe_sum(units.get("wshp", [])),
+                        "silos": safe_sum(units.get("silo", [])),
+                        "sams": safe_sum(units.get("saml", [])),
+                        "defence_posts": safe_sum(units.get("defp", [])),
+                        "total": sum(safe_sum(ulist) for ulist in units.values())
+                    },
+                    "bombs": {
+                        "atom_bombs": safe_sum(bombs.get("abomb", [])),
+                        "hydrogen_bombs": safe_sum(bombs.get("hbomb", [])),
+                        "mirvs": safe_sum(bombs.get("mirv", [])),
+                        "total": sum(safe_sum(blist) for blist in bombs.values())
+                    },
+                    "boats": {
+                        "transports": safe_sum(boats.get("trans", [])),
+                        "trade": safe_sum(boats.get("trade", [])),
+                        "total": sum(safe_sum(blist) for blist in boats.values())
+                    }
                 }
 
         async with self.lock:
@@ -170,11 +222,12 @@ class ClanDataManager:
                 "gameId": game_id, 
                 "start": info_data.get("start"), 
                 "end": info_data.get("end"),
-                "hasWon": is_win, "score": score, "gamemode": gamemode,
-                "mapName": map_name, # Saved Map Name
+                "hasWon": is_win, 
+                "score": score, 
+                "gamemode": gamemode,
+                "mapName": map_name,
                 "totalPlayersInMatch": len(all_players), 
-                "clanPlayers": clan_players,
-                "playerStats": player_match_stats
+                "clanPlayers": clan_players
             }
 
             self.clans[tag]["matches"].append(match_record)
