@@ -114,6 +114,121 @@ class ClanDataManager:
             self.clans[tag]["matches"] = []
         await self.save_clan(tag)
 
+    def extract_match_record(self, clan_tag, session_data, info_data):
+        """Helper function to standardize how match data is parsed across the entire bot."""
+        tag = clan_tag.upper()
+        game_id = session_data.get("gameId")
+        
+        # Safely fall back to checking both session_data and info_data for timestamps
+        start_time = session_data.get("start", info_data.get("start"))
+        end_time = session_data.get("end", info_data.get("end"))
+        is_win = session_data.get("hasWon", False)
+        score = session_data.get("score", 0)
+        num_teams = session_data.get("numTeams", "?")
+        
+        config = info_data.get("config", {})
+        
+        # FIX: Safely force max_players and player_teams to be integers
+        try:
+            max_players = int(config.get("maxPlayers") or 0)
+        except (TypeError, ValueError):
+            max_players = 0
+            
+        try:
+            player_teams = int(config.get("playerTeams") or 0)
+        except (TypeError, ValueError):
+            player_teams = 0
+            
+        map_name = config.get("mapName", config.get("map", "Unknown"))
+        
+        # Safely determine gamemode
+        gamemode_raw = session_data.get("playerTeams", session_data.get("gamemode", "Unknown"))
+        if str(gamemode_raw).lower() in ["trios", "quads", "duos"]:
+            gamemode = f"{gamemode_raw} ({num_teams} Teams)"
+        elif max_players > 0 and player_teams > 0:
+            gamemode = f"{num_teams} teams of {max_players // player_teams}" 
+        else:
+            gamemode = str(gamemode_raw)
+
+        all_players = info_data.get("players", [])
+        clan_players = {}
+
+        # --- SAFE EXTRACTION HELPERS ---
+        def safe_sum(arr):
+            if not isinstance(arr, list): return 0
+            total = 0
+            for item in arr:
+                try: total += int(item)
+                except (ValueError, TypeError): pass
+            return total
+
+        def safe_index(arr, idx):
+            if isinstance(arr, list) and len(arr) > idx:
+                try: return int(arr[idx])
+                except (ValueError, TypeError): pass
+            return 0
+
+        for p in all_players:
+            if p.get("clanTag", "").upper() == tag:
+                p_name = p.get("username", "Unknown")
+                p_stats = p.get("stats", {}) or {}
+                
+                bombs = p_stats.get("bombs", {}) or {}
+                units = p_stats.get("units", {}) or {}
+                boats = p_stats.get("boats", {}) or {}
+                conquests = p_stats.get("conquests", []) or []
+                gold = p_stats.get("gold", []) or []
+
+                clan_players[p_name] = {
+                    "economy": {
+                        "passive/workers": safe_index(gold, 0),
+                        "conquered": safe_index(gold, 1),
+                        "tradeships": safe_index(gold, 2),
+                        "pirated": safe_index(gold, 3),
+                        "personal_trains": safe_index(gold, 4),
+                        "other_trains": safe_index(gold, 5),
+                        "total": safe_sum(gold)
+                    },
+                    "conquests": {
+                        "player_kills": safe_index(conquests, 0),
+                        "nation_kills": safe_index(conquests, 1),
+                        "bot_kills": safe_index(conquests, 2)
+                    },
+                    "units": {
+                        "cities": safe_sum(units.get("city", [])),
+                        "ports": safe_sum(units.get("port", [])),
+                        "factories": safe_sum(units.get("fact", [])),
+                        "warships": safe_sum(units.get("wshp", [])),
+                        "silos": safe_sum(units.get("silo", [])),
+                        "sams": safe_sum(units.get("saml", [])),
+                        "defence_posts": safe_sum(units.get("defp", [])),
+                        "total": sum(safe_sum(ulist) for ulist in units.values())
+                    },
+                    "bombs": {
+                        "atom_bombs": safe_sum(bombs.get("abomb", [])),
+                        "hydrogen_bombs": safe_sum(bombs.get("hbomb", [])),
+                        "mirvs": safe_sum(bombs.get("mirv", [])),
+                        "total": sum(safe_sum(blist) for blist in bombs.values())
+                    },
+                    "boats": {
+                        "transports": safe_sum(boats.get("trans", [])),
+                        "trade": safe_sum(boats.get("trade", [])),
+                        "total": sum(safe_sum(blist) for blist in boats.values())
+                    }
+                }
+
+        return {
+            "gameId": game_id, 
+            "start": start_time, 
+            "end": end_time,
+            "hasWon": is_win, 
+            "score": score, 
+            "gamemode": gamemode,
+            "mapName": map_name,
+            "totalPlayersInMatch": len(all_players), 
+            "clanPlayers": clan_players
+        }
+
     async def process_game(self, clan_tag, session_data, info_data, mode="live"):
         tag = clan_tag.upper()
         await self.load_clan(tag)
@@ -126,62 +241,19 @@ class ClanDataManager:
             return False
 
         is_win = session_data.get("hasWon", False)
-        score = session_data.get("score", 0)
-        num_teams = session_data.get("numTeams", "?")
         
-        config = info_data.get("config", {})
-        max_players = config.get("maxPlayers", 0)
-        player_teams = config.get("playerTeams", 0)
-        
-        # --- GOAL 1: Extract Map Name ---
-        map_name = config.get("mapName", config.get("map", "Unknown"))
-        
-        gamemode_raw = session_data.get("playerTeams", "Unknown")
-        if str(gamemode_raw).lower() in ["trios", "quads", "duos"]:
-            gamemode = f"{gamemode_raw} ({num_teams} Teams)"
-        else:
-            gamemode = f"{num_teams} teams of {max_players // player_teams}" if max_players and player_teams else "Unknown Mode"
-
-        all_players = info_data.get("players", [])
-        clan_players = {}
-        
-        # --- GOAL 6: Extract Per-Player Stats ---
-        player_match_stats = {}
-        for p in all_players:
-            if p.get("clanTag", "").upper() == tag:
-                p_name = p.get("username", "Unknown")
-                
-                clan_players[p_name] = {
-                    "gold": sum(p.get("gold", [0]), key=p.get("gold", [0])),
-                    "nukes": sum(p.get("nukesLaunched", [0]), key=p.get("nukesLaunched", [0]))
-                }
-                
-                # Placeholders for future expanded data. 
-                # If the OpenFront API provides this natively in the match data, grab it here.
-                # If you need a separate API call per player, you can await a fetch function here.
-                player_match_stats[p_name] = {
-                    "gold": p.get("gold", 0), 
-                    "nukes": p.get("nukesLaunched", 0),
-                    # "kills": p.get("kills", 0),
-                }
+        # 1. GENERATE THE DICTIONARY USING THE NEW CENTRAL HELPER
+        match_record = self.extract_match_record(clan_tag, session_data, info_data)
 
         async with self.lock:
-            match_record = {
-                "gameId": game_id, 
-                "start": info_data.get("start"), 
-                "end": info_data.get("end"),
-                "hasWon": is_win, "score": score, "gamemode": gamemode,
-                "mapName": map_name, # Saved Map Name
-                "totalPlayersInMatch": len(all_players), 
-                "clanPlayers": clan_players,
-                "playerStats": player_match_stats
-            }
-
+            # 2. APPEND AND MARK AS PROCESSED
             self.clans[tag]["matches"].append(match_record)
             self.clans[tag]["processed"].add(game_id)
 
+            # 3. UPDATE WINSTREAKS AND BASIC STATS
             stats = self.clans[tag]["stats"]
             stats["total_games"] = stats.get("total_games", 0) + 1
+            
             if is_win:
                 stats["wins"] = stats.get("wins", 0) + 1
                 stats["winstreak"] = stats.get("winstreak", 0) + 1
@@ -191,7 +263,8 @@ class ClanDataManager:
                 stats["winstreak"] = 0
 
             counted = set()
-            for p_name in clan_players:
+            # Iterate using the clanPlayers dict we generated in the helper
+            for p_name in match_record["clanPlayers"]:
                 if p_name in counted: continue
                 counted.add(p_name)
                 
@@ -200,6 +273,7 @@ class ClanDataManager:
                     
                 p_stats = stats["players"][p_name]
                 p_stats["games_played"] += 1
+                
                 if is_win:
                     p_stats["wins"] += 1
                     p_stats["winstreak"] += 1
@@ -212,6 +286,7 @@ class ClanDataManager:
                 
         if mode == "live":
             await self.save_clan(tag)
+            
         return True
     
     async def finalize_batch_update(self, clan_tag):
