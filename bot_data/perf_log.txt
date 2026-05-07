@@ -1,0 +1,32 @@
+[2026-05-07 01:49:11] [Clan Stats Check] took 722.24ms
+[2026-05-07 01:49:11] [Saving UN stats] took 9.01ms
+[2026-05-07 01:49:11] [Saving UN processed] took 4.66ms
+[2026-05-07 01:49:11] [Saving UN matches] took 329.14ms
+[2026-05-07 01:49:16] [Processing Game 2shYL852] took 4.94s (SLOW)
+[2026-05-07 01:49:16] [Saving UN stats] took 9.11ms
+[2026-05-07 01:49:16] [Saving UN processed] took 5.06ms
+[2026-05-07 01:49:17] [Saving UN matches] took 325.23ms
+[2026-05-07 01:49:19] [Processing Game yp4RDzuR] took 3.00s (SLOW)
+[2026-05-07 01:49:19] [Saving UN stats] took 10.47ms
+[2026-05-07 01:49:19] [Saving UN processed] took 5.18ms
+[2026-05-07 01:49:19] [Saving UN matches] took 372.60ms
+[2026-05-07 01:49:41] [Clan Stats Check] took 401.28ms
+[2026-05-07 01:49:41] [Saving UN stats] took 10.42ms
+[2026-05-07 01:49:41] [Saving UN processed] took 4.54ms
+[2026-05-07 01:49:41] [Saving UN matches] took 346.68ms
+[2026-05-07 01:49:44] [Processing Game 4Qa53ZWa] took 3.52s (SLOW)
+[2026-05-07 01:49:44] [Saving UN stats] took 13.29ms
+[2026-05-07 01:49:44] [Saving UN processed] took 5.56ms
+[2026-05-07 01:49:44] [Saving UN matches] took 335.61ms
+[2026-05-07 01:50:11] [Clan Stats Check] took 396.95ms
+[2026-05-07 01:50:24] [Saving GOC stats] took 1.30ms
+[2026-05-07 01:50:24] [Saving GOC processed] took 1.34ms
+[2026-05-07 01:50:24] [Saving GOC matches] took 1.91ms
+[2026-05-07 01:50:40] [Clan Stats Check] took 304.08ms
+[2026-05-07 01:50:43] [Saving CAF stats] took 1.41ms
+[2026-05-07 01:50:43] [Saving CAF processed] took 1.26ms
+[2026-05-07 01:50:43] [Saving CAF matches] took 6.95ms
+[2026-05-07 01:50:58] [Saving CAF stats] took 1.34ms
+[2026-05-07 01:50:58] [Saving CAF processed] took 1.39ms
+[2026-05-07 01:50:58] [Saving CAF matches] took 7.88ms
+[2026-05-07 01:51:11] [Clan Stats Check] took 474.50ms

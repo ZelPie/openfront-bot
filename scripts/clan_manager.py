@@ -1,7 +1,9 @@
 from datetime import time
 import os
-import json
+import ujson as json
 import asyncio
+
+from scripts.atomic_saver import AtomicSaver, PerfTimer
 
 class ClanDataManager:
     def __init__(self, base_dir):
@@ -60,34 +62,17 @@ class ClanDataManager:
         self.clans[tag] = clan_data
 
     async def save_clan(self, clan_tag):
-        """Atomic save: Writes to .tmp first to prevent corruption, then swaps.
-           Includes a retry loop to bypass Windows file locking."""
+        """Atomic save: Writes to .tmp first to prevent corruption, then swaps."""
         tag = clan_tag.upper()
         if tag not in self.clans:
             return
             
         paths = self._get_paths(tag)
 
-        def _write_files():
-            for key, path in paths.items():
-                temp_path = f"{path}.tmp"
-                with open(temp_path, "w") as f:
-                    to_save = list(self.clans[tag][key]) if key == "processed" else self.clans[tag][key]
-                    json.dump(to_save, f, indent=4)
-                
-                # FIX: Bulletproof Windows retry mechanism
-                retries = 10
-                for i in range(retries):
-                    try:
-                        os.replace(temp_path, path)
-                        break # Success! Break out of the retry loop
-                    except (PermissionError, OSError) as e:
-                        if i == retries - 1:
-                            raise e # If it failed 10 times, throw the error
-                        time.sleep(0.5) # Wait half a second and try again
-
-        async with self.lock:
-            await asyncio.to_thread(_write_files)
+        # Uses the built-in lock to prevent race conditions
+        for key, path in paths.items():
+            with PerfTimer(f"Saving {tag} {key}"):
+                await AtomicSaver.save_json_async(path, self.clans[tag][key], lock=self.lock)
 
     async def is_processed(self, clan_tag, game_id):
         await self.load_clan(clan_tag)

@@ -10,6 +10,7 @@ import time
 import json
 
 from .fetch_worker import fetch_game_worker
+from .atomic_saver import AtomicSaver
 
 load_dotenv()
 dev_server_id = int(os.getenv('DEV_SERVER_ID', '0'))
@@ -43,22 +44,9 @@ class RecheckCmds(commands.Cog):
         return set()
 
     def save_progress(self, clan_tag, processed_set):
+        """Saves the current progress set atomically to prevent corruption."""
         path = self.get_progress_path(clan_tag)
-        temp_path = f"{path}.write"
-        
-        # Write to a safe dummy file first
-        with open(temp_path, "w") as f:
-            json.dump(list(processed_set), f)
-            
-        retries = 10
-        for i in range(retries):
-            try:
-                os.replace(temp_path, path)
-                break
-            except (PermissionError, OSError) as e:
-                if i == retries - 1:
-                    print(f"Failed to atomically save progress for {clan_tag}: {e}")
-                time.sleep(0.5)
+        AtomicSaver.save_json(path, processed_set)
 
     def clear_progress(self, clan_tag):
         """Deletes the temporary progress file once fully complete."""

@@ -4,11 +4,13 @@ from discord import app_commands
 import aiohttp
 import asyncio
 from datetime import datetime, timedelta, timezone
+from time import time_ns as ns
 
 import re
-import urllib.parse
 
 from math import ceil
+
+from scripts.atomic_saver import PerfTimer
 
 class BackgroundLoop(commands.Cog):
     def __init__(self, bot):
@@ -239,58 +241,60 @@ class BackgroundLoop(commands.Cog):
         LIMIT = 50
 
         print(f"Checking for new games for {len(unique_clans) if unique_clans else 'no'} clans. . .")
-        
-        async with aiohttp.ClientSession() as http_session:
-            for clan_tag in unique_clans:
-                sessions = []
-                page = 1
-                try:
-                    while True:
-                        api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions?start={iso_timestamp}&page={page}&limit={LIMIT}"
-                        async with http_session.get(api_url, timeout=10) as response:
-                            if response.status != 200:
-                                break
-                            
-                            api_data = await response.json()
-                            results = api_data.get("results", [])
-                            
-                            if not results or results == []:
-                                break
 
-                            sessions.extend(results)
-                            page += 1
-                except Exception as e:
-                    print(f"Error fetching data for {clan_tag}: {e}")
-                    continue
 
-                if not sessions:
-                    continue
-
-                sessions.sort(key=lambda x: x.get("gameStart", ""))
-
-                if not isinstance(sessions[0], dict) or not sessions[0].get("gameId"):
-                    continue
-
-                new_sessions = []
-                for session in sessions:
+        with PerfTimer("Clan Stats Check"):
+            async with aiohttp.ClientSession() as http_session:
+                for clan_tag in unique_clans:
+                    sessions = []
+                    page = 1
                     try:
-                        session_id = session.get("gameId")
-                        if not session_id:
-                            continue
-                        
-                        is_processed = await self.bot.clan_manager.is_processed(clan_tag, session_id)
-                        if not is_processed and session_id not in self.queued_games:
-                            new_sessions.append(session)
+                        while True:
+                            api_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}/sessions?start={iso_timestamp}&page={page}&limit={LIMIT}"
+                            async with http_session.get(api_url, timeout=10) as response:
+                                if response.status != 200:
+                                    break
+                                
+                                api_data = await response.json()
+                                results = api_data.get("results", [])
+                                
+                                if not results or results == []:
+                                    break
+
+                                sessions.extend(results)
+                                page += 1
                     except Exception as e:
-                        print(f"Error: {e}")
+                        print(f"Error fetching data for {clan_tag}: {e}")
+                        continue
 
-                if new_sessions:
-                    for session in new_sessions:
-                        # Only put the clan_tag and session in the queue
-                        self.live_queue.put_nowait((clan_tag, session))
-                        self.queued_games.add(session.get("gameId"))
+                    if not sessions:
+                        continue
 
-                    print(f"Queued {len(new_sessions)} new games for clan [{clan_tag}].")
+                    sessions.sort(key=lambda x: x.get("gameStart", ""))
+
+                    if not isinstance(sessions[0], dict) or not sessions[0].get("gameId"):
+                        continue
+
+                    new_sessions = []
+                    for session in sessions:
+                        try:
+                            session_id = session.get("gameId")
+                            if not session_id:
+                                continue
+                            
+                            is_processed = await self.bot.clan_manager.is_processed(clan_tag, session_id)
+                            if not is_processed and session_id not in self.queued_games:
+                                new_sessions.append(session)
+                        except Exception as e:
+                            print(f"Error: {e}")
+
+                    if new_sessions:
+                        for session in new_sessions:
+                            # Only put the clan_tag and session in the queue
+                            self.live_queue.put_nowait((clan_tag, session))
+                            self.queued_games.add(session.get("gameId"))
+
+                        print(f"Queued {len(new_sessions)} new games for clan [{clan_tag}].")
 
     async def live_worker(self):
         await self.bot.wait_until_ready()
@@ -304,78 +308,79 @@ class BackgroundLoop(commands.Cog):
                     
                     while True:
                         try:
-                            async with http_session.get(game_url, timeout=10) as game_resp:
-                                if game_resp.status == 200:
-                                    game_data = await game_resp.json()
-                                    info = game_data.get("info", {})
-                                    
-                                    if not game_data or not info or not info.get("players"):
-                                        print(f"Data for {session_id} is still empty. Retrying in 2s...")
-                                        await asyncio.sleep(2) 
-                                        continue 
+                            with PerfTimer(f"Processing Game {session_id}"):
+                                async with http_session.get(game_url, timeout=10) as game_resp:
+                                    if game_resp.status == 200:
+                                        game_data = await game_resp.json()
+                                        info = game_data.get("info", {})
                                         
-                                    all_players = info.get("players", [])
-                                    config = info.get("config", {})
+                                        if not game_data or not info or not info.get("players"):
+                                            print(f"Data for {session_id} is still empty. Retrying in 2s...")
+                                            await asyncio.sleep(2) 
+                                            continue 
+                                            
+                                        all_players = info.get("players", [])
+                                        config = info.get("config", {})
 
-                                    self.match_details_cache[session_id] = {
-                                        "players": all_players,
-                                        "start": info.get("start"),
-                                        "end": info.get("end"),
-                                        "maxPlayers": config.get("maxPlayers", 0),
-                                        "playerTeams": config.get("playerTeams", 0),
-                                        "gameMap": config.get("gameMap", "Unknown Map")
-                                    }
+                                        self.match_details_cache[session_id] = {
+                                            "players": all_players,
+                                            "start": info.get("start"),
+                                            "end": info.get("end"),
+                                            "maxPlayers": config.get("maxPlayers", 0),
+                                            "playerTeams": config.get("playerTeams", 0),
+                                            "gameMap": config.get("gameMap", "Unknown Map")
+                                        }
 
-                                    await self.bot.clan_manager.process_game(clan_tag, session, info, mode="live")
-                                    game_end_ms = int(info.get("end", 0)) if info.get("end") else 0
+                                        await self.bot.clan_manager.process_game(clan_tag, session, info, mode="live")
+                                        game_end_ms = int(info.get("end", 0)) if info.get("end") else 0
 
-                                    stats_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}"
-                                    clan_data = {}
-                                    retries = 0
-                                    while not clan_data and retries < 3:
-                                        try:
-                                            async with http_session.get(stats_url, timeout=5) as stat_resp:
-                                                if stat_resp.status == 200:
-                                                    clan_data = await stat_resp.json()
-                                                else:
-                                                    retries += 1
-                                        except Exception:
-                                            retries += 1
+                                        stats_url = f"https://api.openfront.io/public/clan/{clan_tag.lower()}"
+                                        clan_data = {}
+                                        retries = 0
+                                        while not clan_data and retries < 3:
+                                            try:
+                                                async with http_session.get(stats_url, timeout=5) as stat_resp:
+                                                    if stat_resp.status == 200:
+                                                        clan_data = await stat_resp.json()
+                                                    else:
+                                                        retries += 1
+                                            except Exception:
+                                                retries += 1
 
-                                    embed = await self.create_match_embed(
-                                        http_session, clan_tag, session, clan_data, self.match_details_cache
-                                    )
+                                        embed = await self.create_match_embed(
+                                            http_session, clan_tag, session, clan_data, self.match_details_cache
+                                        )
 
-                                    # DISTRIBUTE THE PRE-BUILT EMBED TO ALL TRACKING CHANNELS
-                                    for guild_id, data in list(self.bot.server_data.items()):
-                                        for tracker in data.get("trackers", []):
-                                            if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
-                                                
-                                                channel_scan_time = tracker.get("initial_scan_time", 0)
-                                                if game_end_ms >= channel_scan_time:
-                                                    # Delegate 'track_losses' logic here, rather than inside embed generation
-                                                    if not is_win and not tracker.get("track_losses", False):
-                                                        continue 
-                                                        
-                                                    channel = self.bot.get_channel(tracker["channel_id"])
-                                                    if channel and embed:
-                                                        await channel.send(embed=embed)
-                                    
-                                    print(f"Successfully processed game {session_id} for clan [{clan_tag}]. Win: {is_win}. Games left in queue: {len(self.queued_games) - 1}")
+                                        # DISTRIBUTE THE PRE-BUILT EMBED TO ALL TRACKING CHANNELS
+                                        for guild_id, data in list(self.bot.server_data.items()):
+                                            for tracker in data.get("trackers", []):
+                                                if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
+                                                    
+                                                    channel_scan_time = tracker.get("initial_scan_time", 0)
+                                                    if game_end_ms >= channel_scan_time:
+                                                        # Delegate 'track_losses' logic here, rather than inside embed generation
+                                                        if not is_win and not tracker.get("track_losses", False):
+                                                            continue 
+                                                            
+                                                        channel = self.bot.get_channel(tracker["channel_id"])
+                                                        if channel and embed:
+                                                            await channel.send(embed=embed)
+                                        
+                                        print(f"Successfully processed game {session_id} for clan [{clan_tag}]. Win: {is_win}. Games left in queue: {len(self.queued_games) - 1}")
 
-                                    # CLEAR CACHE TO PREVENT MEMORY LEAK
-                                    self.match_details_cache.pop(session_id, None)
-                                    self.queued_games.discard(session_id)
-                                    stats = await self.bot.clan_manager.get_clan_stats(clan_tag)
-                                    
-                                    break 
+                                        # CLEAR CACHE TO PREVENT MEMORY LEAK
+                                        self.match_details_cache.pop(session_id, None)
+                                        self.queued_games.discard(session_id)
+                                        stats = await self.bot.clan_manager.get_clan_stats(clan_tag)
+                                        
+                                        break 
 
-                                elif game_resp.status == 429:
-                                    print(f"429 Rate Limit. Pausing 5s before retrying {session_id}...")
-                                    await asyncio.sleep(5)
-                                else:
-                                    print(f"Error {game_resp.status}. Retrying {session_id} in 3s...")
-                                    await asyncio.sleep(3)
+                                    elif game_resp.status == 429:
+                                        print(f"429 Rate Limit. Pausing 5s before retrying {session_id}...")
+                                        await asyncio.sleep(5)
+                                    else:
+                                        print(f"Error {game_resp.status}. Retrying {session_id} in 3s...")
+                                        await asyncio.sleep(3)
 
                         except Exception as e:
                             print(f"Network Hiccup on {session_id}. Retrying in 3s... ({e})")

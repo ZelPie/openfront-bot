@@ -1,10 +1,11 @@
 import discord
 from discord.ext import commands
-import json
+import ujson as json
 import os
 from dotenv import load_dotenv
 
 from scripts.clan_manager import ClanDataManager
+from scripts.atomic_saver import AtomicSaver
 
 load_dotenv()
 intents = discord.Intents.default()
@@ -32,9 +33,7 @@ def load_data():
             print(f"Loaded tracking data for {len(bot.server_data)} servers.")
 
 def save_data():
-    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-    with open(DATA_FILE, "w") as f:
-        json.dump(bot.server_data, f, indent=4) 
+    AtomicSaver.save_json(DATA_FILE, bot.server_data)
 
 bot.save_data = save_data
 load_data()
