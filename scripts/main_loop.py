@@ -26,20 +26,20 @@ class BackgroundLoop(commands.Cog):
         if hasattr(self, 'worker_task'):
             self.worker_task.cancel()
 
-    def get_map_thumbnail(self, map_name: str, prod_url: str = "https://openfront.io") -> str:
-        if not map_name:
-            return f"{prod_url}/images/GameplayScreenshot.png"
-        
-        # Lowercase and remove spaces, dots, and parentheses
-        normalized_map = re.sub(r'[\s.()]+', '', map_name.lower())
-        
-        if normalized_map:
-            encoded_map = urllib.parse.quote(normalized_map)
-            return f"{prod_url}/maps/{encoded_map}/thumbnail.webp"
-            
-        return f"{prod_url}/images/GameplayScreenshot.png"
+    def get_map_thumbnail(self, map_name: str, commit_sha: str = "main") -> str:
+        github_raw_base = "https://raw.githubusercontent.com/openfrontio/OpenFrontIO" 
 
-    async def create_match_embed(self, http_session, clan_tag, session, clan_data, match_cache=None):
+        if not map_name:
+            return f"{github_raw_base}/{commit_sha}/resources/images/GameplayScreenshot.png"
+        
+        normalized_map = re.sub(r'[\s.()]+', '', map_name.lower())
+
+        if normalized_map:
+            return f"{github_raw_base}/{commit_sha}/resources/maps/{normalized_map}/thumbnail.webp"
+
+        return f"{github_raw_base}/{commit_sha}/resources/images/GameplayScreenshot.png"
+
+    async def create_match_embed(self, http_session, clan_tag: str, session: dict, clan_data: dict, match_cache: dict = None):
         if match_cache is None: match_cache = {}
 
         session_id = session.get("gameId", "Unknown")
@@ -55,6 +55,7 @@ class BackgroundLoop(commands.Cog):
         all_players = []
         max_players = 0
         player_teams = 0
+        commit_sha = "main"
 
         map_name = "Unknown Map"
         
@@ -66,7 +67,7 @@ class BackgroundLoop(commands.Cog):
 
             max_players = cache_data.get("maxPlayers", 0)
             player_teams = cache_data.get("playerTeams", 0)
-
+            commit_sha = cache_data.get("gitCommit", "main")
             map_name = cache_data.get("gameMap", "Unknown Map")
         else:
             all_data = False
@@ -94,7 +95,8 @@ class BackgroundLoop(commands.Cog):
                                 "end": raw_end, 
                                 "maxPlayers": max_players, 
                                 "playerTeams": player_teams,
-                                "mapName": map_name
+                                "mapName": map_name,
+                                "commitSHA": commit_sha
                             }
 
                             if all_players and game_data and config:
@@ -125,7 +127,7 @@ class BackgroundLoop(commands.Cog):
 
         clan_players = [
             f"``{p.get('username', 'Unknown')}``" for p in all_players 
-            if p.get("clanTag", "").upper() == clan_tag.upper()
+            if (p.get("clanTag") or "").upper() == clan_tag.upper()
         ]
         player_names = ", ".join(clan_players) if clan_players else "Unknown Players"
 
@@ -157,7 +159,7 @@ class BackgroundLoop(commands.Cog):
 
         embed = discord.Embed(title=title, color=color)
 
-        thumbnail_url = self.get_map_thumbnail(map_name)
+        thumbnail_url = self.get_map_thumbnail(map_name, commit_sha)
 
         replay_url = f"https://openfront.io/game/{session_id}?live"
 
@@ -213,7 +215,7 @@ class BackgroundLoop(commands.Cog):
                         except Exception:
                             pass
                             
-                        embed = await self.create_match_embed(http_session, clan_tag, latest_session, clan_data)
+                        embed = await self.create_match_embed(http_session, clan_tag.upper(), latest_session, clan_data)
                         if embed:
                             await interaction.followup.send(content=f"**TEST MODE:** Latest match for [{clan_tag.upper()}]", embed=embed)
                         else:

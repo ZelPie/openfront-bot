@@ -45,9 +45,9 @@ async def setup_hook():
     await bot.load_extension("scripts.stats_cmds")
     await bot.load_extension("scripts.main_loop")
     await bot.load_extension("scripts.load_players")
-    # await bot.load_extension("scripts.winstreak_commands")
     await bot.load_extension("scripts.tests")
     await bot.load_extension("scripts.recheck_cmds")
+    await bot.load_extension("scripts.testing_commands")
     
     try:
         synced = await bot.tree.sync()

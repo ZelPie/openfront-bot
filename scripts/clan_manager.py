@@ -124,36 +124,43 @@ class ClanDataManager:
         end_time = session_data.get("end", info_data.get("end"))
         is_win = session_data.get("hasWon", False)
         score = session_data.get("score", 0)
-        num_teams = session_data.get("numTeams", "?")
         
         config = info_data.get("config", {})
+        map_name = config.get("mapName", config.get("gameMap", config.get("map", "Unknown")))
         
-        # FIX: Safely force max_players and player_teams to be integers
         try:
             max_players = int(config.get("maxPlayers") or 0)
         except (TypeError, ValueError):
             max_players = 0
             
         try:
-            player_teams = int(config.get("playerTeams") or 0)
+            num_teams = int(config.get("playerTeams") or 0)
         except (TypeError, ValueError):
-            player_teams = 0
+            num_teams = 0
             
-        map_name = config.get("mapName", config.get("map", "Unknown"))
-        
-        # Safely determine gamemode
-        gamemode_raw = session_data.get("playerTeams", session_data.get("gamemode", "Unknown"))
-        if str(gamemode_raw).lower() in ["trios", "quads", "duos"]:
-            gamemode = f"{gamemode_raw} ({num_teams} Teams)"
-        elif max_players > 0 and player_teams > 0:
-            gamemode = f"{num_teams} teams of {max_players // player_teams}" 
+        if max_players > 0 and num_teams > 0:
+            team_size = max_players // num_teams
+            if team_size == 2:
+                gamemode = f"Duos ({num_teams} Teams)"
+            elif team_size == 3:
+                gamemode = f"Trios ({num_teams} Teams)"
+            elif team_size == 4:
+                gamemode = f"Quads ({num_teams} Teams)"
+            else:
+                gamemode = f"{num_teams} teams of {team_size}"
         else:
-            gamemode = str(gamemode_raw)
+            # Fallback if the config is missing, rely on whatever was passed in session_data
+            raw_mode = session_data.get("playerTeams", session_data.get("gamemode", "Unknown Mode"))
+            raw_num_teams = session_data.get("numTeams", "?")
+            if str(raw_mode).lower() in ["trios", "quads", "duos"]:
+                gamemode = f"{str(raw_mode).capitalize()} ({raw_num_teams} Teams)"
+            else:
+                gamemode = str(raw_mode)
 
         all_players = info_data.get("players", [])
         clan_players = {}
 
-        # --- SAFE EXTRACTION HELPERS ---
+        # For safe extraction of stats
         def safe_sum(arr):
             if not isinstance(arr, list): return 0
             total = 0
@@ -169,7 +176,7 @@ class ClanDataManager:
             return 0
 
         for p in all_players:
-            if p.get("clanTag", "").upper() == tag:
+            if (p.get("clanTag") or "").upper() == tag:
                 p_name = p.get("username", "Unknown")
                 p_stats = p.get("stats", {}) or {}
                 
@@ -263,7 +270,7 @@ class ClanDataManager:
                 stats["winstreak"] = 0
 
             counted = set()
-            # Iterate using the clanPlayers dict we generated in the helper
+            # Iterate using the clanPlayers dict we generated
             for p_name in match_record["clanPlayers"]:
                 if p_name in counted: continue
                 counted.add(p_name)
