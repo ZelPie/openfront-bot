@@ -149,7 +149,7 @@ class ClanDataManager:
             else:
                 gamemode = f"{num_teams} teams of {team_size}"
         else:
-            # Fallback: if the config is missing, rely on whatever was passed in session_data
+            # Fallback if the config is missing, rely on whatever was passed in session_data
             raw_mode = session_data.get("playerTeams", session_data.get("gamemode", "Unknown Mode"))
             raw_num_teams = session_data.get("numTeams", "?")
             if str(raw_mode).lower() in ["trios", "quads", "duos"]:
@@ -160,7 +160,7 @@ class ClanDataManager:
         all_players = info_data.get("players", [])
         clan_players = {}
 
-        # --- SAFE EXTRACTION HELPERS ---
+        # For safe extraction of stats
         def safe_sum(arr):
             if not isinstance(arr, list): return 0
             total = 0
@@ -176,7 +176,7 @@ class ClanDataManager:
             return 0
 
         for p in all_players:
-            if p.get("clanTag", "").upper() == tag:
+            if (p.get("clanTag") or "").upper() == tag:
                 p_name = p.get("username", "Unknown")
                 p_stats = p.get("stats", {}) or {}
                 
@@ -270,7 +270,7 @@ class ClanDataManager:
                 stats["winstreak"] = 0
 
             counted = set()
-            # Iterate using the clanPlayers dict we generated in the helper
+            # Iterate using the clanPlayers dict we generated
             for p_name in match_record["clanPlayers"]:
                 if p_name in counted: continue
                 counted.add(p_name)

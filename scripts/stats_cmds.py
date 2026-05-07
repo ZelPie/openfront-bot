@@ -178,9 +178,11 @@ class StatsCmds(commands.Cog):
                 if team >= 5:
                     num_team_mode += team_sizes[team]
 
-            favourite_team_size = max(team_sizes, key=team_sizes.get) if team_sizes else None
-            favourite_team_size = max(favourite_team_size, num_team_mode) if num_team_mode and favourite_team_size else None
+            # Determine the favourite team size (the one they played in the most)
+            favourite_team_size = max(max(team_sizes, key=team_sizes.get), num_team_mode) if team_sizes else 0
+
             print(f"duos: {team_sizes.get(2, 0)}, trios: {team_sizes.get(3, 0)}, quads: {team_sizes.get(4, 0)}, other team modes (5+ players): {num_team_mode}")
+            
             if favourite_team_size == 2:
                 favourite_team_str = f"Duos ({team_sizes[2]} matches)"
             elif favourite_team_size == 3:

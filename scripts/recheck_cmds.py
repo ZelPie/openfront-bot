@@ -43,7 +43,6 @@ class RecheckCmds(commands.Cog):
         return set()
 
     def save_progress(self, clan_tag, processed_set):
-        """Saves the current progress set atomically to prevent corruption."""
         path = self.get_progress_path(clan_tag)
         temp_path = f"{path}.write"
         
@@ -51,7 +50,6 @@ class RecheckCmds(commands.Cog):
         with open(temp_path, "w") as f:
             json.dump(list(processed_set), f)
             
-        # Instantly swap it using the bulletproof retry loop
         retries = 10
         for i in range(retries):
             try:
