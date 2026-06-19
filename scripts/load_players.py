@@ -3,7 +3,7 @@ from discord.ext import tasks, commands
 from discord import app_commands
 import aiohttp
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import re
 from dotenv import load_dotenv
 import os
@@ -96,6 +96,8 @@ class LoadPlayers(commands.Cog):
         self.cancel_event.clear()
         self.current_queue = None
         self.start_time = time.time()
+        now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        seconds_ago = (datetime.now(timezone.utc) - timedelta(seconds=10)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
         stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
         base_url = f"https://api.openfront.io/public/clan/{tag_upper.lower()}/sessions"
@@ -105,13 +107,14 @@ class LoadPlayers(commands.Cog):
                 games_to_process = []
                 seen_game_ids = set()
 
-                async with session.get(f"{base_url}?limit=1") as resp:
+                async with session.get(f"{base_url}?limit=1&start={seconds_ago}&end={now}") as resp:
                     if resp.status != 200:
                         await channel.send(f"Failed to access API for **[{tag_upper}]**. Status code: {resp.status}")
                         self.bot.is_swarm_active = False
                         return
                     data = await resp.json()
                     total_games = int(data.get("total", 0))
+                    print(f"{base_url}?limit=1&start={seconds_ago}&end={now}")
 
                 processed_count_db = await self.bot.clan_manager.get_processed_count(tag_upper)
                 LIMIT = 50
@@ -153,119 +156,156 @@ class LoadPlayers(commands.Cog):
                 # PHASE 1: Catch up on missed games
                 if latest_cursor:
                     try:
-                        dt = datetime.fromisoformat(latest_cursor.replace('Z', '+00:00'))
-                        cursor_sec = int(dt.timestamp())
+                        dt_start = datetime.fromisoformat(latest_cursor.replace('Z', '+00:00'))
+                        cursor_sec = int(dt_start.timestamp())
                         display_time = f"<t:{cursor_sec}:f>"
                         await channel.send(f"Fetching missed games since {display_time}...")
-                    except Exception as e:
-                        await channel.send(f"Error occurred while processing latest_cursor: {e}")
-                    page = 1
-                    while total_processed_count < num:
-                        if self.cancel_event.is_set():
-                            break
-                            
-                        page_url = f"{base_url}?start={latest_cursor}&page={page}&limit={LIMIT}"
-                        async with session.get(page_url) as resp:
-                            if resp.status == 429:
-                                await asyncio.sleep(1)
-                                continue
-                            if resp.status != 200:
+                        
+                        current_window_start = dt_start
+                        now = datetime.now(timezone.utc)
+                        
+                        while current_window_start < now and total_processed_count < num:
+                            if self.cancel_event.is_set():
                                 break
                                 
-                            page_data = await resp.json()
-                            results = page_data.get("results", [])
+                            current_window_end = min(current_window_start + timedelta(days=1), now)
+                            start_str = current_window_start.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+                            end_str = current_window_end.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
                             
-                            if not results:
-                                break # Got all the new games!
-                                
-                            for game in results:
-                                game_start = game.get("gameStart")
-                                if game_start and (not new_latest_cursor or game_start > new_latest_cursor):
-                                    new_latest_cursor = game_start
-                                    
-                                gid = game.get("gameId")
-                                if not gid or gid in seen_game_ids:
-                                    continue
-                                    
-                                seen_game_ids.add(gid)
-                                if await self.bot.clan_manager.is_processed(tag_upper, gid):
-                                    continue
-                                    
-                                games_to_process.append(game)
-                                total_processed_count += 1
-                                
-                                if total_processed_count >= num:
+                            page = 1
+                            while total_processed_count < num:
+                                if self.cancel_event.is_set():
                                     break
                                     
-                        page += 1
-                        await asyncio.sleep(0.2)
+                                page_url = f"{base_url}?start={start_str}&end={end_str}&page={page}&limit={LIMIT}"
+                                async with session.get(page_url) as resp:
+                                    if resp.status == 429:
+                                        await asyncio.sleep(1)
+                                        continue
+                                    if resp.status != 200:
+                                        break
+                                        
+                                    page_data = await resp.json()
+                                    results = page_data.get("results", [])
+                                    
+                                    if not results:
+                                        break # Got all the games in this 1-day window!
+                                        
+                                    for game in results:
+                                        game_start = game.get("gameStart")
+                                        if game_start and (not new_latest_cursor or game_start > new_latest_cursor):
+                                            new_latest_cursor = game_start
+                                            
+                                        gid = game.get("gameId")
+                                        if not gid or gid in seen_game_ids:
+                                            continue
+                                            
+                                        seen_game_ids.add(gid)
+                                        if await self.bot.clan_manager.is_processed(tag_upper, gid):
+                                            continue
+                                            
+                                        games_to_process.append(game)
+                                        total_processed_count += 1
+                                        
+                                        if total_processed_count >= num:
+                                            break
+                                            
+                                page += 1
+                                await asyncio.sleep(0.2)
+                                
+                            current_window_start = current_window_end
+                            
+                    except Exception as e:
+                        await channel.send(f"Error occurred while processing latest_cursor: {e}")
 
                 # --- PHASE 2: Deep History Scan ---
                 if total_processed_count < num:
-                    if historical_cursor:
-                        try:
-                            dt = datetime.fromisoformat(historical_cursor.replace('Z', '+00:00'))
-                            cursor_sec = int(dt.timestamp())
-                            display_time = f"<t:{cursor_sec}:f>"
-                            await channel.send(f"Resuming history scan from {display_time}...")
-                        except Exception as e:
-                            await channel.send(f"Error occurred while processing historical_cursor: {e}")
-                    else:
-                        await channel.send("No historical cursor found. Starting deep scan from the beginning...")
-                        
-                    page = 1
-                    while total_processed_count < num:
-                        if self.cancel_event.is_set():
-                            break
-                            
+                    try:
                         if historical_cursor:
-                            page_url = f"{base_url}?end={historical_cursor}&page={page}&limit={LIMIT}"
+                            dt_end = datetime.fromisoformat(historical_cursor.replace('Z', '+00:00'))
+                            cursor_sec = int(dt_end.timestamp())
+                            display_time = f"<t:{cursor_sec}:f>"
+                            await channel.send(f"Resuming history scan backwards from {display_time}...")
                         else:
-                            page_url = f"{base_url}?page={page}&limit={LIMIT}"
+                            await channel.send("No historical cursor found. Starting deep scan backwards from now...")
+                            dt_end = datetime.now(timezone.utc)
                             
-                        async with session.get(page_url) as resp:
-                            if resp.status == 429:
-                                await asyncio.sleep(1)
-                                continue
-                            if resp.status != 200:
+                        current_window_end = dt_end
+                        empty_days_streak = 0
+                        MAX_EMPTY_DAYS = 30 # Stops scanning if no games are found for 30 consecutive days
+                        
+                        while total_processed_count < num and empty_days_streak < MAX_EMPTY_DAYS:
+                            if self.cancel_event.is_set():
                                 break
                                 
-                            page_data = await resp.json()
-                            results = page_data.get("results", [])
+                            current_window_start = current_window_end - timedelta(days=1)
+                            start_str = current_window_start.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+                            end_str = current_window_end.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
                             
-                            if not results:
-                                break # Reached the absolute end of the clan's history!
-                                
-                            for game in results:
-                                game_start = game.get("gameStart")
-                                
-                                # Capture the very first game's time as our latest cursor if this is a fresh start
-                                if game_start and not new_latest_cursor:
-                                    new_latest_cursor = game_start
-                                    
-                                # Push the historical cursor backward
-                                if game_start and (not new_historical_cursor or game_start < new_historical_cursor):
-                                    new_historical_cursor = game_start
-
-                                gid = game.get("gameId")
-                                if not gid or gid in seen_game_ids:
-                                    continue
-                                    
-                                seen_game_ids.add(gid)
-                                if await self.bot.clan_manager.is_processed(tag_upper, gid):
-                                    continue
-                                    
-                                games_to_process.append(game)
-                                total_processed_count += 1
-
-                                if total_processed_count % 250 == 0 and total_processed_count > 0:
-                                    print(f"[{tag_upper}] Historical scan progress: {total_processed_count} / {num} found so far...")
-                                
-                                if total_processed_count >= num:
+                            page = 1
+                            found_in_window = False
+                            
+                            while total_processed_count < num:
+                                if self.cancel_event.is_set():
                                     break
                                     
-                        page += 1
-                        await asyncio.sleep(0.2)
+                                page_url = f"{base_url}?start={start_str}&end={end_str}&page={page}&limit={LIMIT}"
+                                    
+                                async with session.get(page_url) as resp:
+                                    if resp.status == 429:
+                                        await asyncio.sleep(1)
+                                        continue
+                                    if resp.status != 200:
+                                        break
+                                        
+                                    page_data = await resp.json()
+                                    results = page_data.get("results", [])
+                                    
+                                    if not results:
+                                        break # Reached the end of this 1-day window!
+                                        
+                                    found_in_window = True
+                                    
+                                    for game in results:
+                                        game_start = game.get("gameStart")
+                                        
+                                        # Capture the very first game's time as our latest cursor if this is a fresh start
+                                        if game_start and not new_latest_cursor:
+                                            new_latest_cursor = game_start
+                                            
+                                        # Push the historical cursor backward
+                                        if game_start and (not new_historical_cursor or game_start < new_historical_cursor):
+                                            new_historical_cursor = game_start
+
+                                        gid = game.get("gameId")
+                                        if not gid or gid in seen_game_ids:
+                                            continue
+                                            
+                                        seen_game_ids.add(gid)
+                                        if await self.bot.clan_manager.is_processed(tag_upper, gid):
+                                            continue
+                                            
+                                        games_to_process.append(game)
+                                        total_processed_count += 1
+
+                                        if total_processed_count % 250 == 0 and total_processed_count > 0:
+                                            print(f"[{tag_upper}] Historical scan progress: {total_processed_count} / {num} found so far...")
+                                        
+                                        if total_processed_count >= num:
+                                            break
+                                            
+                                page += 1
+                                await asyncio.sleep(0.2)
+                                
+                            if found_in_window:
+                                empty_days_streak = 0
+                            else:
+                                empty_days_streak += 1
+                                
+                            current_window_end = current_window_start
+
+                    except Exception as e:
+                        await channel.send(f"Error occurred while processing historical_cursor: {e}")
                 
                 total_secs = int(time.time() - self.start_time) if self.start_time else 0
                 m, s = divmod(total_secs, 60)
