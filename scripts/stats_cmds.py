@@ -123,7 +123,6 @@ class StatsCmds(commands.Cog):
             player_weighted_wins = 0
             player_weighted_losses = 0
             
-            # Variables to hold the sum of percentages for averaging later
             team_percentage_sum = 0
             lobby_percentage_sum = 0
 
@@ -136,16 +135,15 @@ class StatsCmds(commands.Cog):
                 if has_won:
                     player_weighted_wins += score
                 else:
-                    player_weighted_losses -= score # Assuming score is negative on a loss
+                    player_weighted_losses -= score
                 
                 clan_players_count = len(m.get("clanPlayers", {}))
                 total_players_in_match = m.get("totalPlayersInMatch", 0)
                 
-                # 1. Calculate Lobby Fill % for this specific match
+                # Calculate lobby fill % for this specific match
                 if total_players_in_match > 0:
                     lobby_percentage_sum += (clan_players_count / total_players_in_match)
                 
-                # Parse gamemode safely
                 gamemode_lower = str(m.get("gamemode", "")).lower()
                 team_size = 0
                 
@@ -164,21 +162,21 @@ class StatsCmds(commands.Cog):
                         team_size = int(numbers[1])
                         team_sizes[team_size] = team_sizes.get(team_size, 0) + 1
                 
-                # 2. Calculate Team Fill % for this specific match
+                # 2. Calculate team fill % for this specific match
                 if team_size > 0:
                     team_percentage_sum += (clan_players_count / team_size)
 
-            # 3. Calculate the true averages (Sum of percentages / Number of matches * 100)
+            # 3. Calculate the true averages
             total_matches_played = len(player_matches)
 
             num_team_mode = 0
 
-            # Determine favourite team size and count how many matches were played in team modes (5 or more players)
+            # Determine favourite team size and count how many matches were played in team modes
             for team in team_sizes:
                 if team >= 5:
                     num_team_mode += team_sizes[team]
 
-            # Determine the favourite team size (the one they played in the most)
+            # Determine the favourite team size
             favourite_team_size = max(max(team_sizes, key=team_sizes.get), num_team_mode) if team_sizes else 0
 
             print(f"duos: {team_sizes.get(2, 0)}, trios: {team_sizes.get(3, 0)}, quads: {team_sizes.get(4, 0)}, other team modes (5+ players): {num_team_mode}")
@@ -195,7 +193,6 @@ class StatsCmds(commands.Cog):
             avg_team_percentage = (team_percentage_sum / total_matches_played * 100) if total_matches_played > 0 else 0
             avg_lobby_percentage = (lobby_percentage_sum / total_matches_played * 100) if total_matches_played > 0 else 0
             
-            # WL Ratio
             player_wl_ratio = (player_weighted_wins / player_weighted_losses) if player_weighted_losses > 0 else player_weighted_wins
 
             current_p_num += 1
@@ -415,7 +412,6 @@ class StatsCmds(commands.Cog):
             await interaction.response.send_message("Please provide a valid clan tag.", ephemeral=True)
             return
         
-        # Only validate search_name length if it was actually provided
         if search_name and (len(search_name) == 0 or len(search_name) > 25):
             await interaction.response.send_message("Please provide a valid username (1-25 alphanumeric characters).", ephemeral=True)
             return
@@ -424,14 +420,14 @@ class StatsCmds(commands.Cog):
 
         await self.bot.clan_manager.finalize_batch_update(clan_tag)
         
-        # Load the clan data into memory
         await self.bot.clan_manager.load_clan(tag_upper)
         clan_data = self.bot.clan_manager.clans.get(tag_upper)
         
-        # Set up shared variables for the view at the end
         display_matches = []
         display_title = f"Match History for [{tag_upper}]"
 
+
+        # If a username is provided, only show matches including that player
         if username:
             if not clan_data or not clan_data.get("stats", {}).get("players"):
                 await interaction.followup.send(f"No match history found for **[{tag_upper}]**. Load some games first!", ephemeral=True)
@@ -452,7 +448,6 @@ class StatsCmds(commands.Cog):
                 await interaction.followup.send(f"Could not find any tracked games for player **{username}** in clan **[{tag_upper}]**.")
                 return
                 
-            # Get all matches, reverse them, and filter for games where this player participated
             all_matches = clan_data.get("matches", [])[::-1]
             display_matches = [
                 match for match in all_matches 
@@ -463,7 +458,6 @@ class StatsCmds(commands.Cog):
                 await interaction.followup.send(f"No match history found for **{username}** in clan **[{tag_upper}]**.")
                 return
                 
-            # Make the embed title specific to the player
             display_name = player_list[0] if len(player_list) == 1 else username
             display_title = f"Match History: {display_name} [{tag_upper}]"
             
@@ -472,7 +466,6 @@ class StatsCmds(commands.Cog):
                 await interaction.followup.send(f"No match history found for **[{tag_upper}]**. Try loading some games first!", ephemeral=True)
                 return
             
-            # Get matches and reverse them so the latest game is index 1
             display_matches = clan_data["matches"][::-1]
         
         def format_match(index, match):
@@ -487,7 +480,6 @@ class StatsCmds(commands.Cog):
             raw_start = match.get("start")
             time_str = "Unknown Time"
             if raw_start:
-                # Convert ms timestamp to seconds for Discord time formatting
                 time_str = f"<t:{int(raw_start / 1000)}:R>"
                 
             sign = "+" if is_win else ""
@@ -504,7 +496,6 @@ class StatsCmds(commands.Cog):
                 f"> **Match ID:** ``{game_id}``\n\n"
             )
             
-        # Ensure items_per_page is within a reasonable limit to prevent Discord embed limits
         valid_num = num if 0 < num <= 10 else 5
             
         view = LbDisplay(

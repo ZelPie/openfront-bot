@@ -22,7 +22,7 @@ class TrackingCmds(commands.Cog):
             await interaction.response.send_message("You don't have permission to manage channels, which is required to set up tracking.", ephemeral=True)
             return
 
-        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)
 
         if len(tag_upper) == 0 or len(tag_upper) > 5:
             await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
@@ -73,7 +73,7 @@ class TrackingCmds(commands.Cog):
         guild_id = interaction.guild_id
         tag_upper = clan_tag.upper()
 
-        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)  # Sanitize input to prevent issues
+        tag_upper = re.sub(r'[^A-Za-z0-9]', '', tag_upper)
 
         if len(tag_upper) == 0 or len(tag_upper) > 5:
             await interaction.response.send_message("Please provide a valid clan tag (1-5 alphanumeric characters).", ephemeral=True)
@@ -102,7 +102,6 @@ class TrackingCmds(commands.Cog):
     async def list_trackers(self, interaction: discord.Interaction):
         guild_id = interaction.guild_id
 
-        # Safely get the guild data
         guild_info = self.bot.server_data.get(guild_id, {})
         trackers = guild_info.get("trackers", [])
         
@@ -110,12 +109,10 @@ class TrackingCmds(commands.Cog):
             await interaction.response.send_message("No active trackers in this server.", ephemeral=True)
             return
 
-        # Grouping logic: { 'UN': [{'name': '#general', 'losses': True}, ...] }
         grouped_trackers = {}
         for t in trackers:
             tag = t.get("clan_tag", "UNKNOWN").upper()
             
-            # Determine the channel name
             channel_id = t.get("channel_id")
             channel = self.bot.get_channel(channel_id)
             if channel:
@@ -123,13 +120,11 @@ class TrackingCmds(commands.Cog):
             else:
                 name = t.get("channel_name", f"Unknown ({channel_id})")
 
-            # Get tracking preference
             track_losses = t.get("track_losses", False)
                     
             if tag not in grouped_trackers:
                 grouped_trackers[tag] = []
             
-            # Check if this specific channel/setting combo is already added
             exists = any(item['name'] == name and item['losses'] == track_losses for item in grouped_trackers[tag])
             if not exists:
                 grouped_trackers[tag].append({'name': name, 'losses': track_losses})
@@ -142,7 +137,6 @@ class TrackingCmds(commands.Cog):
             
             channel_lines = []
             for c in channel_list:
-                # Create a label for the tracking mode
                 mode = "Wins + Losses" if c['losses'] else "Wins Only"
                 channel_lines.append(f"`{c['name']}` ({mode})")
 

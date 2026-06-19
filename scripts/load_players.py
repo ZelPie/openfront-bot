@@ -124,25 +124,20 @@ class LoadPlayers(commands.Cog):
                     await channel.send(f"[{tag_upper}] history is already fully processed.")
                     return
 
-                # 1. State-Saved Latest Cursor (Protects against the "Gap Problem")
                 latest_cursor = stats.get("latest_cursor")
                 new_latest_cursor = latest_cursor
 
-                # 2. Dynamic Historical Cursor (The past is solid, so just read the oldest game!)
                 historical_cursor = None
                 saved_matches = self.bot.clan_manager.clans[tag_upper].get("matches", [])
                 
                 if saved_matches:
                     raw_start = saved_matches[0].get("start")
                     if raw_start:
-                        # Safely convert milliseconds to an ISO string for the OpenFront API
                         try:
                             if isinstance(raw_start, (int, float)) or (isinstance(raw_start, str) and raw_start.isdigit()):
                                 dt = datetime.fromtimestamp(int(raw_start) / 1000, tz=timezone.utc)
-                                # The API requires the 'Z' suffix for UTC time
                                 historical_cursor = dt.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
                             else:
-                                # Fallback if it is somehow already an ISO string
                                 historical_cursor = raw_start
                         except Exception as e:
                             print(f"[{tag_upper}] Time conversion error for historical cursor: {e}")
@@ -189,7 +184,7 @@ class LoadPlayers(commands.Cog):
                                     results = page_data.get("results", [])
                                     
                                     if not results:
-                                        break # Got all the games in this 1-day window!
+                                        break
                                         
                                     for game in results:
                                         game_start = game.get("gameStart")
@@ -218,7 +213,7 @@ class LoadPlayers(commands.Cog):
                     except Exception as e:
                         await channel.send(f"Error occurred while processing latest_cursor: {e}")
 
-                # --- PHASE 2: Deep History Scan ---
+                # PHASE 2: Deep History Scan
                 if total_processed_count < num:
                     try:
                         if historical_cursor:
@@ -232,7 +227,7 @@ class LoadPlayers(commands.Cog):
                             
                         current_window_end = dt_end
                         empty_days_streak = 0
-                        MAX_EMPTY_DAYS = 30 # Stops scanning if no games are found for 30 consecutive days
+                        MAX_EMPTY_DAYS = 30
                         
                         while total_processed_count < num and empty_days_streak < MAX_EMPTY_DAYS:
                             if self.cancel_event.is_set():
@@ -262,18 +257,16 @@ class LoadPlayers(commands.Cog):
                                     results = page_data.get("results", [])
                                     
                                     if not results:
-                                        break # Reached the end of this 1-day window!
+                                        break
                                         
                                     found_in_window = True
                                     
                                     for game in results:
                                         game_start = game.get("gameStart")
                                         
-                                        # Capture the very first game's time as our latest cursor if this is a fresh start
                                         if game_start and not new_latest_cursor:
                                             new_latest_cursor = game_start
                                             
-                                        # Push the historical cursor backward
                                         if game_start and (not new_historical_cursor or game_start < new_historical_cursor):
                                             new_historical_cursor = game_start
 
@@ -397,11 +390,9 @@ class LoadPlayers(commands.Cog):
                         f"⏱ **Total Time Taken:** `{formatted_total_time}` (Worker Time: `{formatted_worker_time}`, Fetch Time: `{formatted_time}`)"
                     )
                 
-                # ... 
                 if not self.cancel_event.is_set():
                     active_stats = await self.bot.clan_manager.get_clan_stats(tag_upper)
                     
-                    # We ONLY need to save the latest_cursor now!
                     active_stats["latest_cursor"] = new_latest_cursor
                     print(f"Queue done. Saved latest_cursor: {new_latest_cursor}")
                 

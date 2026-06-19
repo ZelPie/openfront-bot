@@ -75,16 +75,15 @@ class ClanDataManager:
                     to_save = list(self.clans[tag][key]) if key == "processed" else self.clans[tag][key]
                     json.dump(to_save, f, indent=4)
                 
-                # FIX: Bulletproof Windows retry mechanism
                 retries = 10
                 for i in range(retries):
                     try:
                         os.replace(temp_path, path)
-                        break # Success! Break out of the retry loop
+                        break
                     except (PermissionError, OSError) as e:
                         if i == retries - 1:
-                            raise e # If it failed 10 times, throw the error
-                        time.sleep(0.5) # Wait half a second and try again
+                            raise e
+                        time.sleep(0.5)
 
         async with self.lock:
             await asyncio.to_thread(_write_files)
@@ -119,7 +118,6 @@ class ClanDataManager:
         tag = clan_tag.upper()
         game_id = session_data.get("gameId")
         
-        # Safely fall back to checking both session_data and info_data for timestamps
         start_time = session_data.get("start", info_data.get("start"))
         end_time = session_data.get("end", info_data.get("end"))
         is_win = session_data.get("hasWon", False)
@@ -149,7 +147,6 @@ class ClanDataManager:
             else:
                 gamemode = f"{num_teams} teams of {team_size}"
         else:
-            # Fallback if the config is missing, rely on whatever was passed in session_data
             raw_mode = session_data.get("playerTeams", session_data.get("gamemode", "Unknown Mode"))
             raw_num_teams = session_data.get("numTeams", "?")
             if str(raw_mode).lower() in ["trios", "quads", "duos"]:
@@ -160,7 +157,6 @@ class ClanDataManager:
         all_players = info_data.get("players", [])
         clan_players = {}
 
-        # For safe extraction of stats
         def safe_sum(arr):
             if not isinstance(arr, list): return 0
             total = 0
@@ -249,15 +245,12 @@ class ClanDataManager:
 
         is_win = session_data.get("hasWon", False)
         
-        # 1. GENERATE THE DICTIONARY USING THE NEW CENTRAL HELPER
         match_record = self.extract_match_record(clan_tag, session_data, info_data)
 
         async with self.lock:
-            # 2. APPEND AND MARK AS PROCESSED
             self.clans[tag]["matches"].append(match_record)
             self.clans[tag]["processed"].add(game_id)
 
-            # 3. UPDATE WINSTREAKS AND BASIC STATS
             stats = self.clans[tag]["stats"]
             stats["total_games"] = stats.get("total_games", 0) + 1
             
@@ -270,7 +263,6 @@ class ClanDataManager:
                 stats["winstreak"] = 0
 
             counted = set()
-            # Iterate using the clanPlayers dict we generated
             for p_name in match_record["clanPlayers"]:
                 if p_name in counted: continue
                 counted.add(p_name)
@@ -301,12 +293,10 @@ class ClanDataManager:
         await self.load_clan(tag)
         
         async with self.lock:
-            # 1. Sort matches chronologically by start time
             self.clans[tag]["matches"].sort(key=lambda x: x.get("start", 0))
 
             old_stats = self.clans[tag]["stats"]
             
-            # 2. Reset stats to recalculate from the sorted match history
             stats = {
                 "total_games": 0, "wins": 0, "winstreak": 0, "highest_winstreak": 0, 
                 "players": {}, 
@@ -315,7 +305,6 @@ class ClanDataManager:
                 "latest_cursor": old_stats.get("latest_cursor")
             }
             
-            # 3. Re-process every match in the now-sorted list
             for match in self.clans[tag]["matches"]:
                 is_win = match.get("hasWon", False)
                 stats["total_games"] += 1
@@ -346,5 +335,4 @@ class ClanDataManager:
 
             self.clans[tag]["stats"] = stats
             
-        # 4. Save the sorted matches and updated stats
         await self.save_clan(tag)

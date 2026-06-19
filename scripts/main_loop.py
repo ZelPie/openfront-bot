@@ -233,7 +233,7 @@ class BackgroundLoop(commands.Cog):
                 if tracker.get("clan_tag"):
                     unique_clans.add(tracker["clan_tag"])
         
-        # Pull strictly 1 hour of history for every clan, regardless of channel trackers
+        # Pull 1 hour of history for every clan, regardless of channel trackers
         one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
         iso_timestamp = one_hour_ago.strftime('%Y-%m-%dT%H:%M:%SZ')
         now_timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -287,7 +287,6 @@ class BackgroundLoop(commands.Cog):
 
                 if new_sessions:
                     for session in new_sessions:
-                        # Only put the clan_tag and session in the queue
                         self.live_queue.put_nowait((clan_tag, session))
                         self.queued_games.add(session.get("gameId"))
 
@@ -347,14 +346,13 @@ class BackgroundLoop(commands.Cog):
                                         http_session, clan_tag, session, clan_data, self.match_details_cache
                                     )
 
-                                    # DISTRIBUTE THE PRE-BUILT EMBED TO ALL TRACKING CHANNELS
+                                    # Send to all channels tracking this clan
                                     for guild_id, data in list(self.bot.server_data.items()):
                                         for tracker in data.get("trackers", []):
                                             if tracker.get("clan_tag") == clan_tag and tracker.get("channel_id"):
                                                 
                                                 channel_scan_time = tracker.get("initial_scan_time", 0)
                                                 if game_end_ms >= channel_scan_time:
-                                                    # Delegate 'track_losses' logic here, rather than inside embed generation
                                                     if not is_win and not tracker.get("track_losses", False):
                                                         continue 
                                                         
@@ -364,7 +362,7 @@ class BackgroundLoop(commands.Cog):
                                     
                                     print(f"Successfully processed game {session_id} for clan [{clan_tag}]. Win: {is_win}. Games left in queue: {len(self.queued_games) - 1}")
 
-                                    # CLEAR CACHE TO PREVENT MEMORY LEAK
+                                    # Clear cache
                                     self.match_details_cache.pop(session_id, None)
                                     self.queued_games.discard(session_id)
                                     stats = await self.bot.clan_manager.get_clan_stats(clan_tag)

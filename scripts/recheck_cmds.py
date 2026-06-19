@@ -1,3 +1,5 @@
+# TEMPORARY DEBUGGING COG
+
 import discord
 from discord.ext import tasks, commands
 from discord import app_commands
@@ -46,7 +48,7 @@ class RecheckCmds(commands.Cog):
         path = self.get_progress_path(clan_tag)
         temp_path = f"{path}.write"
         
-        # Write to a safe dummy file first
+        # Write to a safe temp file first
         with open(temp_path, "w") as f:
             json.dump(list(processed_set), f)
             
@@ -148,10 +150,9 @@ class RecheckCmds(commands.Cog):
             async with aiohttp.ClientSession() as session:
                 clan_data = self.bot.clan_manager.clans[tag_upper]
                 
-                # ONLY USE ALREADY SAVED MATCHES
+                # Uses only previously loaded matches
                 all_matches = clan_data.get("matches", [])
                 
-                # Load previously finished gameIds so we can resume
                 processed_ids = self.load_progress(tag_upper)
 
                 # Filter out the games we've already rechecked
@@ -198,7 +199,6 @@ class RecheckCmds(commands.Cog):
                         
                         new_match_data = self.bot.clan_manager.extract_match_record(tag_upper, game, info)
                         
-                        # Apply live update directly to the clan manager memory
                         async with self.bot.clan_manager.lock:
                             for i, m in enumerate(self.bot.clan_manager.clans[tag_upper]["matches"]):
                                 if m.get("gameId") == gid:
@@ -229,7 +229,6 @@ class RecheckCmds(commands.Cog):
                 formatted_worker_time = f"{h:03d}:{m:02d}:{s:02d}"
 
                 if self.cancel_event.is_set():
-                    # Same order for the cancel hook: Save main DB, then progress
                     await self.bot.clan_manager.save_clan(tag_upper)
                     self.save_progress(tag_upper, processed_ids)
                     
@@ -239,13 +238,10 @@ class RecheckCmds(commands.Cog):
                         f"⏱ **Time Spent:** `{formatted_worker_time}`"
                     )
                 else:
-                    # Save DB one last time
                     await self.bot.clan_manager.save_clan(tag_upper)
                     
-                    # Clear out the .tmp file entirely now that 100% of the games have been checked
                     self.clear_progress(tag_upper)
                     
-                    # Finalize batch update to trigger a recalculation of winstreaks/stats using the new data
                     print(f"[{tag_upper}] Finalizing batch update and calculating stats...")
                     await self.bot.clan_manager.finalize_batch_update(tag_upper)
 

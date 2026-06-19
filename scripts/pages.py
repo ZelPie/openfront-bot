@@ -29,7 +29,6 @@ class LbDisplay(discord.ui.View):
         page_data = self.data[start_idx:end_idx]
 
         description = ""
-        # The start= parameter ensures the rank numbers stay accurate across pages
         for i, item in enumerate(page_data, start=start_idx + self.rank_offset):
             description += self.formatter_func(i, item)
 

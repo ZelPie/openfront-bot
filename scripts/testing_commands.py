@@ -27,7 +27,6 @@ class MapUpload(commands.Cog):
         encoded_map = urllib.parse.quote(normalized_map)
         map_url = f"https://openfront.io/maps/{encoded_map}/thumbnail.webp"
 
-        # --- THE FIX: Fake a real web browser ---
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "image/webp,image/apng,image/*,*/*;q=0.8"
@@ -35,7 +34,6 @@ class MapUpload(commands.Cog):
 
         # 2. Download the image using the fake headers
         try:
-            # Pass the headers into the session here!
             async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.get(map_url, timeout=5) as resp:
                     if resp.status == 200:
